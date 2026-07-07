@@ -538,6 +538,22 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			};
 			const response = await client.messages.create({ ...params, stream: true }, requestOptions).asResponse();
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+			// `.asResponse()` bypasses the SDK's status handling: a non-OK JSON error
+			// body (or a non-SSE 200) contains zero SSE events, so the iterator below
+			// ends CLEANLY and the turn reports an empty-but-successful assistant
+			// message (0 tokens, stopReason "stop") — the failure disappears. Fail
+			// closed on both instead.
+			if (!response.ok) {
+				const errBody = await response.text().catch(() => "<unreadable>");
+				throw new Error(`Anthropic API HTTP ${response.status}: ${errBody.slice(0, 500)}`);
+			}
+			const contentType = response.headers.get("content-type") ?? "";
+			if (!contentType.includes("text/event-stream")) {
+				const nonSse = await response.text().catch(() => "<unreadable>");
+				throw new Error(
+					`Anthropic API returned a non-SSE response to a streaming request (content-type "${contentType}"): ${nonSse.slice(0, 500)}`,
+				);
+			}
 			stream.push({ type: "start", partial: output });
 
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
