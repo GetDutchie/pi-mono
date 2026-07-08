@@ -60,6 +60,7 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
 function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCompat> {
 	return {
 		supportsDeveloperRole: model.compat?.supportsDeveloperRole ?? true,
+		supportsStrictMode: model.compat?.supportsStrictMode ?? true,
 		sendSessionIdHeader: model.compat?.sendSessionIdHeader ?? true,
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
 	};
@@ -246,7 +247,10 @@ function buildParams(model: Model<"openai-responses">, context: Context, options
 	}
 
 	if (context.tools && context.tools.length > 0) {
-		params.tools = convertResponsesTools(context.tools);
+		// Strict tool schemas by default; per-model compat opt-out plus a
+		// PI_STRICT_TOOLS=0 environment kill switch for emergency rollback.
+		const strictEnabled = compat.supportsStrictMode && getProviderEnvValue("PI_STRICT_TOOLS", options?.env) !== "0";
+		params.tools = convertResponsesTools(context.tools, { strict: strictEnabled === true });
 	}
 
 	if (model.reasoning) {

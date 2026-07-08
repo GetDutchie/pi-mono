@@ -968,6 +968,8 @@ function buildParams(
 			isOAuthToken,
 			compat.supportsEagerToolInputStreaming,
 			compat.supportsCacheControlOnTools ? cacheControl : undefined,
+			// PI_STRICT_TOOLS=0: environment kill switch for emergency rollback.
+			getProviderEnvValue("PI_STRICT_TOOLS", options?.env) !== "0",
 		);
 	}
 
@@ -1207,6 +1209,7 @@ function convertTools(
 	isOAuthToken: boolean,
 	supportsEagerToolInputStreaming: boolean,
 	cacheControl?: CacheControlEphemeral,
+	strictEnabled = true,
 ): Anthropic.Messages.Tool[] {
 	if (!tools) return [];
 
@@ -1215,7 +1218,7 @@ function convertTools(
 		// schema grammar — native structured output, replacing the
 		// validate-and-reprompt loop for schema conformance. Per-tool fallback:
 		// an unstrictifiable schema is sent without strict and keeps the loop.
-		const strictSchema = anthropicStrictToolSchema(tool.parameters);
+		const strictSchema = strictEnabled ? anthropicStrictToolSchema(tool.parameters) : null;
 		const schema = (strictSchema ?? tool.parameters) as { properties?: unknown; required?: string[] };
 
 		return {

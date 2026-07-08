@@ -265,22 +265,58 @@ function formatValidationPath(error: TLocalizedValidationError): string {
 function stripStrictModeNulls(value: unknown, schema: JsonSchemaObject | undefined): void {
 	if (!schema || value === null || typeof value !== "object") return;
 	if (Array.isArray(value)) {
-		const items = schema.items as JsonSchemaObject | undefined;
-		if (items) for (const entry of value) stripStrictModeNulls(entry, items);
+		const items = schema.items;
+		if (Array.isArray(items)) {
+			for (const [i, entry] of value.entries()) stripStrictModeNulls(entry, items[i]);
+		} else if (items) {
+			for (const entry of value) stripStrictModeNulls(entry, items);
+		}
 		return;
 	}
-	const props = schema.properties as Record<string, JsonSchemaObject> | undefined;
-	if (!props) return;
-	const required = new Set(Array.isArray(schema.required) ? (schema.required as string[]) : []);
+	// Collect every object-shaped view of this schema: the direct node plus
+	// any object branches under allOf/anyOf/oneOf — the strictifier recurses
+	// into compositions, so its null artifacts can appear inside them too.
+	const views = collectObjectViews(schema);
+	if (views.length === 0) return;
 	const obj = value as Record<string, unknown>;
-	for (const [key, propSchema] of Object.entries(props)) {
-		if (!(key in obj)) continue;
-		if (obj[key] === null && !required.has(key) && !schemaAllowsNull(propSchema)) {
-			delete obj[key];
+	for (const key of Object.keys(obj)) {
+		const mentioned = views.filter((v) => key in v.props);
+		if (mentioned.length === 0) continue;
+		if (obj[key] === null) {
+			// Strip only when NO view requires the key and NO view allows null
+			// for it — i.e. the null is unambiguously a strict-mode artifact.
+			const anyRequires = views.some((v) => v.required.has(key));
+			const anyAllowsNull = mentioned.some((v) => schemaAllowsNull(v.props[key]));
+			if (!anyRequires && !anyAllowsNull) {
+				delete obj[key];
+			}
 			continue;
 		}
-		stripStrictModeNulls(obj[key], propSchema);
+		for (const v of mentioned) stripStrictModeNulls(obj[key], v.props[key]);
 	}
+}
+
+interface ObjectSchemaView {
+	props: Record<string, JsonSchemaObject>;
+	required: Set<string>;
+}
+
+function collectObjectViews(schema: JsonSchemaObject): ObjectSchemaView[] {
+	const out: ObjectSchemaView[] = [];
+	const visit = (s: JsonSchemaObject | undefined): void => {
+		if (!s || typeof s !== "object" || Array.isArray(s)) return;
+		if (s.properties && typeof s.properties === "object") {
+			out.push({
+				props: s.properties,
+				required: new Set(Array.isArray(s.required) ? s.required : []),
+			});
+		}
+		for (const arr of [s.allOf, s.anyOf, s.oneOf]) {
+			if (Array.isArray(arr)) for (const member of arr) visit(member);
+		}
+	};
+	visit(schema);
+	return out;
 }
 
 function schemaAllowsNull(schema: JsonSchemaObject | undefined): boolean {

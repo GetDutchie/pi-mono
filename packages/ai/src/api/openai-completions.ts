@@ -581,7 +581,12 @@ function buildParams(
 	}
 
 	if (context.tools && context.tools.length > 0) {
-		params.tools = convertTools(context.tools, compat);
+		params.tools = convertTools(
+			context.tools,
+			compat,
+			// PI_STRICT_TOOLS=0: environment kill switch for emergency rollback.
+			getProviderEnvValue("PI_STRICT_TOOLS", options?.env) !== "0",
+		);
 		if (compat.zaiToolStream) {
 			(params as any).tool_stream = true;
 		}
@@ -1096,13 +1101,15 @@ export function convertMessages(
 function convertTools(
 	tools: Tool[],
 	compat: ResolvedOpenAICompletionsCompat,
+	strictEnabled = true,
 ): OpenAI.Chat.Completions.ChatCompletionTool[] {
 	return tools.map((tool) => {
 		// Native structured output: strict tool schemas (grammar-constrained
 		// arguments) on providers that support strict mode. Per-tool fallback:
 		// an unstrictifiable schema is sent unstrict (reprompt-loop
 		// enforcement). Providers without strict support omit the field.
-		const strictSchema = compat.supportsStrictMode !== false ? strictToolSchema(tool.parameters) : null;
+		const strictSchema =
+			strictEnabled && compat.supportsStrictMode !== false ? strictToolSchema(tool.parameters) : null;
 		return {
 			type: "function",
 			function: {

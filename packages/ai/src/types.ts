@@ -521,6 +521,8 @@ export interface OpenAICompletionsCompat {
 export interface OpenAIResponsesCompat {
 	/** Whether the provider supports the `developer` role (vs `system`). Default: true. */
 	supportsDeveloperRole?: boolean;
+	/** Whether the provider supports strict tool schemas (`tools[].strict: true`). Default: true. */
+	supportsStrictMode?: boolean;
 	/** Whether to send the OpenAI `session_id` cache-affinity header from `options.sessionId` when caching is enabled. Default: true. */
 	sendSessionIdHeader?: boolean;
 	/** Whether the provider supports `prompt_cache_retention: "24h"`. Default: true. */
@@ -688,7 +690,7 @@ export interface Model<TApi extends Api> {
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"
 		? OpenAICompletionsCompat
-		: TApi extends "openai-responses"
+		: TApi extends "openai-responses" | "azure-openai-responses"
 			? OpenAIResponsesCompat
 			: TApi extends "anthropic-messages"
 				? AnthropicMessagesCompat

@@ -24,6 +24,8 @@
  * validate-and-reprompt loop remains that tool's enforcement.
  */
 
+import { transformJSONSchema } from "@anthropic-ai/sdk/lib/transform-json-schema";
+
 // Keywords OpenAI strict mode rejects. They are advisory-to-the-model only in
 // strict requests; runtime validation still enforces them from the original
 // schema.
@@ -99,6 +101,11 @@ function transformNode(node: unknown): unknown {
 			out.properties = props;
 			continue;
 		}
+		if (key === "items" && Array.isArray(value)) {
+			// Tuple-form items cannot be expressed in the strict subset — sending
+			// them strict gets the whole request 400'd at admission time.
+			throw new Unstrictifiable("tuple items");
+		}
 		if (key === "items" || key === "anyOf" || key === "allOf" || key === "$defs" || key === "definitions") {
 			out[key] = transformNode(value);
 			continue;
@@ -139,8 +146,11 @@ function makeNullable(prop: Record<string, unknown>): Record<string, unknown> {
 		if (anyOf.some((m) => m?.type === "null")) return prop;
 		return { ...prop, anyOf: [...anyOf, { type: "null" }] };
 	}
-	// No type info (bare schema) — leave as-is; strict mode treats it as any.
-	return prop;
+	// No direct type ($ref, allOf, bare schema): wrap in an anyOf with null so
+	// the model can still express absence. Making such a property required
+	// WITHOUT a null escape would silently change the tool's input contract
+	// (the model would be grammar-forced to invent a value).
+	return { anyOf: [prop, { type: "null" }] };
 }
 
 const strictCache = new WeakMap<object, Record<string, unknown> | null>();
@@ -171,63 +181,43 @@ export function strictToolSchema(schema: object): Record<string, unknown> | null
 // ---------------------------------------------------------------------------
 
 /**
- * Anthropic's strict tool use requires `additionalProperties: false` on every
- * object and an explicit `required` list, but — unlike OpenAI — does NOT
- * require every property to be listed in `required`, so optional properties
- * stay optional (no nullable-optional transformation, no null-stripping on
- * the way back). All other keywords pass through to Anthropic's grammar
- * compiler untouched.
+ * Anthropic strict tool use, via the Anthropic SDK's OWN strict-schema
+ * transformer (`@anthropic-ai/sdk/lib/transform-json-schema`) — the
+ * authoritative definition of what their grammar compiler accepts. It
+ * whitelists supported fields, forces `additionalProperties: false`,
+ * converts oneOf→anyOf, and moves unsupported keywords (including `enum`,
+ * `pattern`, numeric bounds) into `description` — those stay enforced
+ * post-hoc by original-schema validation (the reprompt loop remains their
+ * fallback), while structure and types are grammar-enforced.
+ *
+ * Structural pre-check: keywords whose SEMANTICS cannot survive the strict
+ * transform (passthrough/conditional shapes) make the tool unstrictifiable
+ * entirely — forcing additionalProperties:false while dropping
+ * patternProperties would silently break a passthrough tool, not just relax
+ * its enforcement. The SDK transformer throwing (e.g. tuple items, typeless
+ * nodes) also falls back to unstrict.
  */
-function anthropicTransformNode(node: unknown): unknown {
-	if (node === null || typeof node !== "object") return node;
-	if (Array.isArray(node)) return node.map(anthropicTransformNode);
-
+function assertAnthropicStrictifiable(node: unknown): void {
+	if (node === null || typeof node !== "object") return;
+	if (Array.isArray(node)) {
+		for (const entry of node) assertAnthropicStrictifiable(entry);
+		return;
+	}
 	const obj = node as Record<string, unknown>;
-	const out: Record<string, unknown> = {};
-
 	for (const [key, value] of Object.entries(obj)) {
-		if (key === "additionalProperties") {
-			// Explicit passthrough objects cannot be expressed in strict mode.
-			if (value !== false) throw new Unstrictifiable("additionalProperties");
-			continue; // re-added below
-		}
-		if (key === "properties" && value !== null && typeof value === "object") {
-			const props: Record<string, unknown> = {};
-			for (const [pk, pv] of Object.entries(value as Record<string, unknown>)) {
-				props[pk] = anthropicTransformNode(pv);
-			}
-			out.properties = props;
-			continue;
-		}
-		if (
-			key === "items" ||
-			key === "anyOf" ||
-			key === "allOf" ||
-			key === "oneOf" ||
-			key === "$defs" ||
-			key === "definitions"
-		) {
-			out[key] = anthropicTransformNode(value);
-			continue;
-		}
-		out[key] = value;
+		if (UNSTRICTIFIABLE_KEYWORDS.has(key)) throw new Unstrictifiable(key);
+		if (key === "additionalProperties" && value !== false) throw new Unstrictifiable("additionalProperties");
+		assertAnthropicStrictifiable(value);
 	}
-
-	if (out.type === "object" && out.properties !== null && typeof out.properties === "object") {
-		out.additionalProperties = false;
-		if (!Array.isArray(out.required)) out.required = [];
-	}
-
-	return out;
 }
 
 const anthropicStrictCache = new WeakMap<object, Record<string, unknown> | null>();
 
 /**
  * Transform a tool parameter schema into Anthropic's strict-tool-use shape.
- * Returns `null` when the schema cannot be strictified (explicit
- * additionalProperties passthrough) — that tool is sent without strict and
- * keeps the reprompt loop. Results are cached per schema object identity.
+ * Returns `null` when the schema cannot be strictified — that tool is sent
+ * without strict and keeps the reprompt loop. Results are cached per schema
+ * object identity.
  */
 export function anthropicStrictToolSchema(schema: object): Record<string, unknown> | null {
 	const cached = anthropicStrictCache.get(schema);
@@ -235,7 +225,8 @@ export function anthropicStrictToolSchema(schema: object): Record<string, unknow
 	let result: Record<string, unknown> | null;
 	try {
 		const raw = JSON.parse(JSON.stringify(schema)) as unknown;
-		result = anthropicTransformNode(raw) as Record<string, unknown>;
+		assertAnthropicStrictifiable(raw);
+		result = transformJSONSchema(raw as Parameters<typeof transformJSONSchema>[0]) as Record<string, unknown>;
 	} catch {
 		result = null;
 	}
