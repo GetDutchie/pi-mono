@@ -106,7 +106,12 @@ function transformNode(node: unknown): unknown {
 			// them strict gets the whole request 400'd at admission time.
 			throw new Unstrictifiable("tuple items");
 		}
-		if (key === "items" || key === "anyOf" || key === "allOf" || key === "$defs" || key === "definitions") {
+		if (key === "allOf") {
+			// OpenAI's strict subset does not accept allOf — sending it strict
+			// admission-fails the whole request. Fall back to the reprompt loop.
+			throw new Unstrictifiable("allOf");
+		}
+		if (key === "items" || key === "anyOf" || key === "$defs" || key === "definitions") {
 			out[key] = transformNode(value);
 			continue;
 		}
@@ -146,7 +151,7 @@ function makeNullable(prop: Record<string, unknown>): Record<string, unknown> {
 		if (anyOf.some((m) => m?.type === "null")) return prop;
 		return { ...prop, anyOf: [...anyOf, { type: "null" }] };
 	}
-	// No direct type ($ref, allOf, bare schema): wrap in an anyOf with null so
+	// No direct type ($ref, bare schema): wrap in an anyOf with null so
 	// the model can still express absence. Making such a property required
 	// WITHOUT a null escape would silently change the tool's input contract
 	// (the model would be grammar-forced to invent a value).
