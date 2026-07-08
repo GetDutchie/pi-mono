@@ -31,6 +31,7 @@ import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { strictToolSchema } from "../utils/strict-tool-schema.ts";
 import { transformMessages } from "./transform-messages.ts";
 
 // =============================================================================
@@ -271,14 +272,33 @@ export function convertResponsesMessages<TApi extends Api>(
 // =============================================================================
 
 export function convertResponsesTools(tools: Tool[], options?: ConvertResponsesToolsOptions): OpenAITool[] {
-	const strict = options?.strict === undefined ? false : options.strict;
-	return tools.map((tool) => ({
-		type: "function",
-		name: tool.name,
-		description: tool.description,
-		parameters: tool.parameters as any, // TypeBox already generates JSON Schema
-		strict,
-	}));
+	// Default is now STRICT: the provider logit-masks tool-call arguments
+	// against the schema grammar (native structured output), which replaces
+	// the validate-and-reprompt loop for schema conformance. Per-tool
+	// fallback: a schema that cannot be expressed in the strict subset is
+	// sent unstrict and keeps the loop as its enforcement. Callers can pass
+	// strict: false (providers without strict support) or strict: null
+	// (codex) to preserve the legacy behavior wholesale.
+	const strict = options?.strict === undefined ? true : options.strict;
+	if (strict !== true) {
+		return tools.map((tool) => ({
+			type: "function",
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters as any, // TypeBox already generates JSON Schema
+			strict,
+		}));
+	}
+	return tools.map((tool) => {
+		const strictSchema = strictToolSchema(tool.parameters);
+		return {
+			type: "function",
+			name: tool.name,
+			description: tool.description,
+			parameters: (strictSchema ?? tool.parameters) as any,
+			strict: strictSchema !== null,
+		};
+	});
 }
 
 // =============================================================================

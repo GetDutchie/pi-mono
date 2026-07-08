@@ -14,6 +14,8 @@ interface JsonSchemaObject {
 	allOf?: JsonSchemaObject[];
 	anyOf?: JsonSchemaObject[];
 	oneOf?: JsonSchemaObject[];
+	required?: string[];
+	const?: unknown;
 }
 
 function getSchemaTypes(schema: JsonSchemaObject): string[] {
@@ -254,6 +256,45 @@ function formatValidationPath(error: TLocalizedValidationError): string {
 }
 
 /**
+ * Recursively remove null values for properties the original schema marks
+ * optional (not in `required`) and not explicitly nullable. These nulls are
+ * artifacts of the strict-mode nullable-optional transformation — a null for
+ * an optional non-nullable property would have failed validation anyway, so
+ * stripping is strictly an improvement for every provider.
+ */
+function stripStrictModeNulls(value: unknown, schema: JsonSchemaObject | undefined): void {
+	if (!schema || value === null || typeof value !== "object") return;
+	if (Array.isArray(value)) {
+		const items = schema.items as JsonSchemaObject | undefined;
+		if (items) for (const entry of value) stripStrictModeNulls(entry, items);
+		return;
+	}
+	const props = schema.properties as Record<string, JsonSchemaObject> | undefined;
+	if (!props) return;
+	const required = new Set(Array.isArray(schema.required) ? (schema.required as string[]) : []);
+	const obj = value as Record<string, unknown>;
+	for (const [key, propSchema] of Object.entries(props)) {
+		if (!(key in obj)) continue;
+		if (obj[key] === null && !required.has(key) && !schemaAllowsNull(propSchema)) {
+			delete obj[key];
+			continue;
+		}
+		stripStrictModeNulls(obj[key], propSchema);
+	}
+}
+
+function schemaAllowsNull(schema: JsonSchemaObject | undefined): boolean {
+	if (!schema) return true;
+	const t = schema.type;
+	if (t === "null") return true;
+	if (Array.isArray(t) && t.includes("null")) return true;
+	const anyOf = schema.anyOf as JsonSchemaObject[] | undefined;
+	if (Array.isArray(anyOf) && anyOf.some((m) => schemaAllowsNull(m) && m?.type === "null")) return true;
+	if ("const" in schema && schema.const === null) return true;
+	return false;
+}
+
+/**
  * Finds a tool by name and validates the tool call arguments against its TypeBox schema
  * @param tools Array of tool definitions
  * @param toolCall The tool call from the LLM
@@ -277,6 +318,12 @@ export function validateToolCall(tools: Tool[], toolCall: ToolCall): any {
  */
 export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 	const args = structuredClone(toolCall.arguments);
+	// Strict-mode tool schemas (see utils/strict-tool-schema.ts) express
+	// optional properties as required-but-nullable; the model emits null for
+	// "absent". Strip those nulls back off (only where the ORIGINAL schema
+	// marks the property optional and not nullable) before validating against
+	// the original schema.
+	stripStrictModeNulls(args, tool.parameters as unknown as JsonSchemaObject);
 	Value.Convert(tool.parameters, args);
 
 	const validator = getValidator(tool.parameters);

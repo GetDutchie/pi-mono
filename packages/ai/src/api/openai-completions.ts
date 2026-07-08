@@ -38,6 +38,7 @@ import { headersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { strictToolSchema } from "../utils/strict-tool-schema.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { buildBaseOptions } from "./simple-options.ts";
@@ -1096,16 +1097,23 @@ function convertTools(
 	tools: Tool[],
 	compat: ResolvedOpenAICompletionsCompat,
 ): OpenAI.Chat.Completions.ChatCompletionTool[] {
-	return tools.map((tool) => ({
-		type: "function",
-		function: {
-			name: tool.name,
-			description: tool.description,
-			parameters: tool.parameters as any, // TypeBox already generates JSON Schema
-			// Only include strict if provider supports it. Some reject unknown fields.
-			...(compat.supportsStrictMode !== false && { strict: false }),
-		},
-	}));
+	return tools.map((tool) => {
+		// Native structured output: strict tool schemas (grammar-constrained
+		// arguments) on providers that support strict mode. Per-tool fallback:
+		// an unstrictifiable schema is sent unstrict (reprompt-loop
+		// enforcement). Providers without strict support omit the field.
+		const strictSchema = compat.supportsStrictMode !== false ? strictToolSchema(tool.parameters) : null;
+		return {
+			type: "function",
+			function: {
+				name: tool.name,
+				description: tool.description,
+				parameters: (strictSchema ?? tool.parameters) as any, // TypeBox already generates JSON Schema
+				// Only include strict if provider supports it. Some reject unknown fields.
+				...(compat.supportsStrictMode !== false && { strict: strictSchema !== null }),
+			},
+		};
+	});
 }
 
 function parseChunkUsage(

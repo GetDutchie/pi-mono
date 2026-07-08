@@ -34,6 +34,7 @@ import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { anthropicStrictToolSchema } from "../utils/strict-tool-schema.ts";
 
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
@@ -1210,16 +1211,23 @@ function convertTools(
 	if (!tools) return [];
 
 	return tools.map((tool, index) => {
-		const schema = tool.parameters as { properties?: unknown; required?: string[] };
+		// Strict tool use (GA): Anthropic logit-masks tool inputs against the
+		// schema grammar — native structured output, replacing the
+		// validate-and-reprompt loop for schema conformance. Per-tool fallback:
+		// an unstrictifiable schema is sent without strict and keeps the loop.
+		const strictSchema = anthropicStrictToolSchema(tool.parameters);
+		const schema = (strictSchema ?? tool.parameters) as { properties?: unknown; required?: string[] };
 
 		return {
 			name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,
 			description: tool.description,
 			...(supportsEagerToolInputStreaming ? { eager_input_streaming: true } : {}),
+			...(strictSchema !== null ? { strict: true } : {}),
 			input_schema: {
 				type: "object",
 				properties: schema.properties ?? {},
 				required: schema.required ?? [],
+				...(strictSchema !== null ? { additionalProperties: false } : {}),
 			},
 			...(cacheControl && index === tools.length - 1 ? { cache_control: cacheControl } : {}),
 		};
