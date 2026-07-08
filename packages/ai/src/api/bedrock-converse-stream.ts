@@ -225,7 +225,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
 					...(options.temperature !== undefined && { temperature: options.temperature }),
 				},
-				toolConfig: convertToolConfig(context.tools, options.toolChoice),
+				toolConfig: buildToolConfig(context.tools, options),
 				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
 				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 			};
@@ -665,8 +665,7 @@ function supportsPromptCaching(model: Model<"bedrock-converse-stream">, env?: Pr
 	// models ran UNCACHED on Bedrock — ~10x input cost on multi-turn agent runs.
 	if (
 		candidates.some(
-			(s) =>
-				s.includes("fable-5") || s.includes("sonnet-5") || s.includes("opus-5") || s.includes("haiku-5"),
+			(s) => s.includes("fable-5") || s.includes("sonnet-5") || s.includes("opus-5") || s.includes("haiku-5"),
 		)
 	)
 		return true;
@@ -933,6 +932,29 @@ function convertToolConfig(
 	}
 
 	return { tools: bedrockTools, toolChoice: bedrockToolChoice };
+}
+
+/**
+ * Structured output via a synthetic forced tool (same mechanism as
+ * anthropic-messages: Bedrock Converse has no logit-level grammar constraint;
+ * a forced toolChoice with an inputSchema is its native structured-output
+ * path). The result surfaces as a toolCall content block.
+ */
+function buildToolConfig(tools: Tool[] | undefined, options: BedrockOptions): ToolConfiguration | undefined {
+	const base = convertToolConfig(tools, options.toolChoice);
+	if (!options.outputSchema) return base;
+	const outputToolName = options.outputSchema.name ?? "structured_output";
+	const outputTool: BedrockTool = {
+		toolSpec: {
+			name: outputToolName,
+			description: options.outputSchema.description ?? "Emit the structured result.",
+			inputSchema: { json: options.outputSchema.schema as unknown as DocumentType },
+		},
+	};
+	return {
+		tools: [...(base?.tools ?? []), outputTool],
+		toolChoice: { tool: { name: outputToolName } },
+	};
 }
 
 function mapStopReason(reason: string | undefined): StopReason {

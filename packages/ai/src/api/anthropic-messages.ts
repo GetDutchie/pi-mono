@@ -1016,6 +1016,27 @@ function buildParams(
 		}
 	}
 
+	if (options?.outputSchema) {
+		// Structured output via a synthetic forced tool. Anthropic has no
+		// logit-level grammar constraint; a forced tool_choice with an
+		// input_schema is its native structured-output mechanism. The result
+		// surfaces as a toolCall content block — callers read its arguments.
+		if (options?.thinkingEnabled) {
+			// Anthropic rejects tool_choice:{type:"tool"} with extended thinking.
+			throw new Error(
+				"outputSchema is incompatible with thinkingEnabled on anthropic-messages (forced tool_choice)",
+			);
+		}
+		const outputToolName = options.outputSchema.name ?? "structured_output";
+		const outputTool = {
+			name: outputToolName,
+			description: options.outputSchema.description ?? "Emit the structured result.",
+			input_schema: options.outputSchema.schema,
+		} as NonNullable<MessageCreateParamsStreaming["tools"]>[number];
+		params.tools = [...(params.tools ?? []), outputTool];
+		params.tool_choice = { type: "tool", name: outputToolName };
+	}
+
 	return params;
 }
 

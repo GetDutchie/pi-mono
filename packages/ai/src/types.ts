@@ -182,6 +182,31 @@ export interface StreamOptions {
 	 * proxy variables.
 	 */
 	env?: ProviderEnv;
+	/**
+	 * Provider-native structured output (constrained decoding). When set, the
+	 * provider forces the model's final output to conform to this JSON Schema
+	 * using its native mechanism — logit-masked grammar where the provider
+	 * supports it:
+	 *  - openai-responses / azure-openai-responses: `text.format` json_schema (strict)
+	 *  - openai-completions: `response_format` json_schema (strict)
+	 *  - google-generative-ai / google-vertex: `responseMimeType: application/json`
+	 *    + `responseJsonSchema`
+	 *  - anthropic-messages / bedrock-converse-stream: a synthetic tool named
+	 *    `outputSchema.name` with a forced tool_choice (schema-enforced tool
+	 *    input — Anthropic has no logit-level grammar constraint). The result
+	 *    surfaces as a toolCall content block, not text; callers must read the
+	 *    forced tool's arguments on these APIs.
+	 * Incompatible with extended thinking on tool-forcing APIs (throws).
+	 * APIs without a native mechanism ignore this option.
+	 */
+	outputSchema?: {
+		/** Schema/tool name surfaced to the provider. Default: "structured_output". */
+		name?: string;
+		/** Tool description on tool-forcing APIs (anthropic/bedrock). */
+		description?: string;
+		/** JSON Schema (draft-07-ish; provider-specific subsets apply). */
+		schema: Record<string, unknown>;
+	};
 }
 
 export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;

@@ -277,6 +277,19 @@ function buildParams(
 		params.tools = convertResponsesTools(context.tools);
 	}
 
+	if (options?.outputSchema) {
+		// Native constrained decoding — Azure's Responses API accepts the same
+		// text.format json_schema (strict) grammar constraint as OpenAI's.
+		params.text = {
+			format: {
+				type: "json_schema",
+				name: options.outputSchema.name ?? "structured_output",
+				strict: true,
+				schema: options.outputSchema.schema,
+			},
+		} as ResponseCreateParamsStreaming["text"];
+	}
+
 	if (model.reasoning) {
 		if (options?.reasoningEffort || options?.reasoningSummary) {
 			const effort = options?.reasoningEffort

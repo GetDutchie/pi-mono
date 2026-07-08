@@ -489,6 +489,12 @@ function buildParams(
 		config.abortSignal = options.signal;
 	}
 
+	if (options.outputSchema) {
+		// Native constrained decoding — same mechanism as google-generative-ai.
+		config.responseMimeType = "application/json";
+		(config as { responseJsonSchema?: unknown }).responseJsonSchema = options.outputSchema.schema;
+	}
+
 	const params: GenerateContentParameters = {
 		model: model.id,
 		contents,

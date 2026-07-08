@@ -597,6 +597,22 @@ function buildParams(
 		params.tool_choice = options.toolChoice;
 	}
 
+	if (options?.outputSchema) {
+		// Native constrained decoding: Chat Completions structured outputs
+		// (response_format json_schema, strict). Supported by OpenAI and most
+		// OpenAI-compatible local servers (llama.cpp/LM Studio grammar-constrain;
+		// servers without support reject the request loudly rather than
+		// silently degrading).
+		params.response_format = {
+			type: "json_schema",
+			json_schema: {
+				name: options.outputSchema.name ?? "structured_output",
+				strict: true,
+				schema: options.outputSchema.schema,
+			},
+		};
+	}
+
 	if (compat.thinkingFormat === "zai" && model.reasoning) {
 		const zaiParams = params as Omit<typeof params, "reasoning_effort"> & {
 			thinking?: { type: "enabled" | "disabled"; clear_thinking?: boolean };
