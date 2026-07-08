@@ -70,6 +70,14 @@ export interface CreateAgentSessionOptions {
 	/** Custom tools to register (in addition to built-in tools). */
 	customTools?: ToolDefinition[];
 
+	/**
+	 * Send tool JSON Schemas with the provider's strict/constrained-decoding
+	 * mode (OpenAI-family strict: true — the provider logit-masks tool-call
+	 * arguments against the schema grammar). Tool parameter schemas must
+	 * satisfy the provider's strict-mode subset when enabled.
+	 */
+	strictTools?: boolean;
+
 	/** Resource loader. When omitted, DefaultResourceLoader is used. */
 	resourceLoader?: ResourceLoader;
 
@@ -298,6 +306,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			thinkingLevel,
 			tools: [],
 		},
+		strictTools: options.strictTools,
 		convertToLlm: convertToLlmWithBlockImages,
 		streamFn: async (model, context, options) => {
 			const auth = await modelRegistry.getApiKeyAndHeaders(model);

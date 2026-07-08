@@ -118,6 +118,12 @@ export interface AgentOptions {
 	transport?: Transport;
 	maxRetryDelayMs?: number;
 	toolExecution?: ToolExecutionMode;
+	/**
+	 * Send tool JSON Schemas with the provider's strict/constrained-decoding
+	 * mode (see StreamOptions.strictTools). Tool parameter schemas must satisfy
+	 * the provider's strict-mode subset when enabled.
+	 */
+	strictTools?: boolean;
 }
 
 class PendingMessageQueue {
@@ -206,6 +212,8 @@ export class Agent {
 	public maxRetryDelayMs?: number;
 	/** Tool execution strategy for assistant messages that contain multiple tool calls. */
 	public toolExecution: ToolExecutionMode;
+	/** Send tool JSON Schemas with strict/constrained decoding (StreamOptions.strictTools). */
+	public strictTools?: boolean;
 
 	constructor(options: AgentOptions = {}) {
 		this._state = createMutableAgentState(options.initialState);
@@ -225,6 +233,7 @@ export class Agent {
 		this.thinkingBudgets = options.thinkingBudgets;
 		this.transport = options.transport ?? "auto";
 		this.maxRetryDelayMs = options.maxRetryDelayMs;
+		this.strictTools = options.strictTools;
 		this.toolExecution = options.toolExecution ?? "parallel";
 	}
 
@@ -440,6 +449,7 @@ export class Agent {
 			transport: this.transport,
 			thinkingBudgets: this.thinkingBudgets,
 			maxRetryDelayMs: this.maxRetryDelayMs,
+			strictTools: this.strictTools,
 			toolExecution: this.toolExecution,
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,
