@@ -580,7 +580,7 @@ function buildParams(
 	}
 
 	if (context.tools && context.tools.length > 0) {
-		params.tools = convertTools(context.tools, compat);
+		params.tools = convertTools(context.tools, compat, options?.strictTools ?? false);
 		if (compat.zaiToolStream) {
 			(params as any).tool_stream = true;
 		}
@@ -1111,6 +1111,7 @@ export function convertMessages(
 function convertTools(
 	tools: Tool[],
 	compat: ResolvedOpenAICompletionsCompat,
+	strictTools = false,
 ): OpenAI.Chat.Completions.ChatCompletionTool[] {
 	return tools.map((tool) => ({
 		type: "function",
@@ -1119,7 +1120,7 @@ function convertTools(
 			description: tool.description,
 			parameters: tool.parameters as any, // TypeBox already generates JSON Schema
 			// Only include strict if provider supports it. Some reject unknown fields.
-			...(compat.supportsStrictMode !== false && { strict: false }),
+			...(compat.supportsStrictMode !== false && { strict: strictTools }),
 		},
 	}));
 }

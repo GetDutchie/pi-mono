@@ -207,6 +207,16 @@ export interface StreamOptions {
 		/** JSON Schema (draft-07-ish; provider-specific subsets apply). */
 		schema: Record<string, unknown>;
 	};
+	/**
+	 * Send tool JSON Schemas with the provider's strict/constrained-decoding
+	 * mode enabled (OpenAI-family `strict: true` — the provider logit-masks
+	 * tool-call arguments against the schema grammar, so the model physically
+	 * cannot emit arguments that violate the schema; no validate-and-reprompt
+	 * loop needed). Tool schemas must satisfy the provider's strict-mode
+	 * subset (additionalProperties: false, all properties required).
+	 * Ignored by APIs without native strict tool schemas.
+	 */
+	strictTools?: boolean;
 }
 
 export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;
