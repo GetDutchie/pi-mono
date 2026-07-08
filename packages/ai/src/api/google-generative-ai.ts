@@ -391,15 +391,6 @@ function buildParams(
 		config.abortSignal = options.signal;
 	}
 
-	if (options.outputSchema) {
-		// Native constrained decoding: Gemini grammar-constrains generation
-		// against the schema. responseJsonSchema (SDK ≥1.5x) takes standard JSON
-		// Schema (unlike responseSchema's OpenAPI subset). Cast covers older
-		// installed SDK type surfaces; the field passes through regardless.
-		config.responseMimeType = "application/json";
-		(config as { responseJsonSchema?: unknown }).responseJsonSchema = options.outputSchema.schema;
-	}
-
 	const params: GenerateContentParameters = {
 		model: model.id,
 		contents,

@@ -246,20 +246,7 @@ function buildParams(model: Model<"openai-responses">, context: Context, options
 	}
 
 	if (context.tools && context.tools.length > 0) {
-		params.tools = convertResponsesTools(context.tools, { strict: options?.strictTools ?? false });
-	}
-
-	if (options?.outputSchema) {
-		// Native constrained decoding: the Responses API masks logits against the
-		// schema grammar (strict: true), so the final message text IS valid JSON.
-		params.text = {
-			format: {
-				type: "json_schema",
-				name: options.outputSchema.name ?? "structured_output",
-				strict: true,
-				schema: options.outputSchema.schema,
-			},
-		} as ResponseCreateParamsStreaming["text"];
+		params.tools = convertResponsesTools(context.tools);
 	}
 
 	if (model.reasoning) {

@@ -580,7 +580,7 @@ function buildParams(
 	}
 
 	if (context.tools && context.tools.length > 0) {
-		params.tools = convertTools(context.tools, compat, options?.strictTools ?? false);
+		params.tools = convertTools(context.tools, compat);
 		if (compat.zaiToolStream) {
 			(params as any).tool_stream = true;
 		}
@@ -595,22 +595,6 @@ function buildParams(
 
 	if (options?.toolChoice) {
 		params.tool_choice = options.toolChoice;
-	}
-
-	if (options?.outputSchema) {
-		// Native constrained decoding: Chat Completions structured outputs
-		// (response_format json_schema, strict). Supported by OpenAI and most
-		// OpenAI-compatible local servers (llama.cpp/LM Studio grammar-constrain;
-		// servers without support reject the request loudly rather than
-		// silently degrading).
-		params.response_format = {
-			type: "json_schema",
-			json_schema: {
-				name: options.outputSchema.name ?? "structured_output",
-				strict: true,
-				schema: options.outputSchema.schema,
-			},
-		};
 	}
 
 	if (compat.thinkingFormat === "zai" && model.reasoning) {
@@ -1111,7 +1095,6 @@ export function convertMessages(
 function convertTools(
 	tools: Tool[],
 	compat: ResolvedOpenAICompletionsCompat,
-	strictTools = false,
 ): OpenAI.Chat.Completions.ChatCompletionTool[] {
 	return tools.map((tool) => ({
 		type: "function",
@@ -1120,7 +1103,7 @@ function convertTools(
 			description: tool.description,
 			parameters: tool.parameters as any, // TypeBox already generates JSON Schema
 			// Only include strict if provider supports it. Some reject unknown fields.
-			...(compat.supportsStrictMode !== false && { strict: strictTools }),
+			...(compat.supportsStrictMode !== false && { strict: false }),
 		},
 	}));
 }
