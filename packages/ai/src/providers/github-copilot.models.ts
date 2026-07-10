@@ -69,7 +69,7 @@ export const GITHUB_COPILOT_MODELS = {
 		headers: {"User-Agent":"GitHubCopilotChat/0.35.0","Editor-Version":"vscode/1.107.0","Editor-Plugin-Version":"copilot-chat/0.35.0","Copilot-Integration-Id":"vscode-chat"},
 		compat: {"forceAdaptiveThinking":true},
 		reasoning: true,
-		thinkingLevelMap: {"xhigh":"max"},
+		thinkingLevelMap: {"max":"max"},
 		input: ["text", "image"],
 		cost: {
 			input: 5,
@@ -89,7 +89,7 @@ export const GITHUB_COPILOT_MODELS = {
 		headers: {"User-Agent":"GitHubCopilotChat/0.35.0","Editor-Version":"vscode/1.107.0","Editor-Plugin-Version":"copilot-chat/0.35.0","Copilot-Integration-Id":"vscode-chat"},
 		compat: {"forceAdaptiveThinking":true,"supportsTemperature":false},
 		reasoning: true,
-		thinkingLevelMap: {"xhigh":"xhigh","minimal":"low"},
+		thinkingLevelMap: {"xhigh":"xhigh","max":"max","minimal":"low"},
 		input: ["text", "image"],
 		cost: {
 			input: 5,
@@ -97,7 +97,7 @@ export const GITHUB_COPILOT_MODELS = {
 			cacheRead: 0.5,
 			cacheWrite: 6.25,
 		},
-		contextWindow: 200000,
+		contextWindow: 1000000,
 		maxTokens: 32000,
 	} satisfies Model<"anthropic-messages">,
 	"claude-opus-4.8": {
@@ -109,7 +109,7 @@ export const GITHUB_COPILOT_MODELS = {
 		headers: {"User-Agent":"GitHubCopilotChat/0.35.0","Editor-Version":"vscode/1.107.0","Editor-Plugin-Version":"copilot-chat/0.35.0","Copilot-Integration-Id":"vscode-chat"},
 		compat: {"forceAdaptiveThinking":true,"supportsTemperature":false},
 		reasoning: true,
-		thinkingLevelMap: {"xhigh":"xhigh","minimal":"low"},
+		thinkingLevelMap: {"xhigh":"xhigh","max":"max","minimal":"low"},
 		input: ["text", "image"],
 		cost: {
 			input: 5,
@@ -117,7 +117,7 @@ export const GITHUB_COPILOT_MODELS = {
 			cacheRead: 0.5,
 			cacheWrite: 6.25,
 		},
-		contextWindow: 200000,
+		contextWindow: 1000000,
 		maxTokens: 64000,
 	} satisfies Model<"anthropic-messages">,
 	"claude-sonnet-4": {
@@ -167,7 +167,7 @@ export const GITHUB_COPILOT_MODELS = {
 		headers: {"User-Agent":"GitHubCopilotChat/0.35.0","Editor-Version":"vscode/1.107.0","Editor-Plugin-Version":"copilot-chat/0.35.0","Copilot-Integration-Id":"vscode-chat"},
 		compat: {"forceAdaptiveThinking":true},
 		reasoning: true,
-		thinkingLevelMap: {"minimal":"low","xhigh":"max"},
+		thinkingLevelMap: {"max":"max","minimal":"low"},
 		input: ["text", "image"],
 		cost: {
 			input: 3,
@@ -187,6 +187,7 @@ export const GITHUB_COPILOT_MODELS = {
 		headers: {"User-Agent":"GitHubCopilotChat/0.35.0","Editor-Version":"vscode/1.107.0","Editor-Plugin-Version":"copilot-chat/0.35.0","Copilot-Integration-Id":"vscode-chat"},
 		compat: {"forceAdaptiveThinking":true},
 		reasoning: true,
+		thinkingLevelMap: {"xhigh":"xhigh","max":"max"},
 		input: ["text", "image"],
 		cost: {
 			input: 2,
@@ -365,7 +366,7 @@ export const GITHUB_COPILOT_MODELS = {
 			cacheRead: 0.175,
 			cacheWrite: 0,
 		},
-		contextWindow: 400000,
+		contextWindow: 1000000,
 		maxTokens: 128000,
 	} satisfies Model<"openai-responses">,
 	"gpt-5.4": {
@@ -384,7 +385,7 @@ export const GITHUB_COPILOT_MODELS = {
 			cacheRead: 0.25,
 			cacheWrite: 0,
 		},
-		contextWindow: 400000,
+		contextWindow: 1000000,
 		maxTokens: 128000,
 	} satisfies Model<"openai-responses">,
 	"gpt-5.4-mini": {
@@ -441,7 +442,7 @@ export const GITHUB_COPILOT_MODELS = {
 			cacheRead: 0.5,
 			cacheWrite: 0,
 		},
-		contextWindow: 400000,
+		contextWindow: 1000000,
 		maxTokens: 128000,
 	} satisfies Model<"openai-responses">,
 	"kimi-k2.7-code": {
