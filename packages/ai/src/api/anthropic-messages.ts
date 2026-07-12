@@ -251,6 +251,8 @@ export interface AnthropicOptions extends StreamOptions {
 	 * Default: omitted (Anthropic default behavior, currently equivalent to auto).
 	 */
 	toolChoice?: "auto" | "any" | "none" | { type: "tool"; name: string; disableParallelToolUse?: boolean };
+	/** Native Anthropic JSON Schema response format. Internal structured-completion use only. */
+	outputSchema?: { schema: Record<string, unknown> };
 	/**
 	 * Pre-built Anthropic client instance. When provided, skips internal client
 	 * construction entirely. Use this to inject alternative SDK clients such as
@@ -993,6 +995,12 @@ function buildParams(
 				...(cacheControl ? { cache_control: cacheControl } : {}),
 			},
 		];
+	}
+
+	if (options?.outputSchema) {
+		params.output_config = {
+			format: { type: "json_schema", schema: options.outputSchema.schema },
+		};
 	}
 
 	// Temperature is incompatible with extended thinking and unsupported on Claude Opus 4.7+.

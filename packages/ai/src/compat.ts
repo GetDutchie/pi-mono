@@ -308,14 +308,15 @@ const DEFAULT_STRUCTURED_OUTPUT_TOOL_NAME = "submit_structured_output";
 const DEFAULT_STRUCTURED_OUTPUT_TOOL_DESCRIPTION = "Return the requested structured output using this function.";
 const STRUCTURED_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
-function usesNativeBedrockStructuredOutput(model: Model<Api>): boolean {
+function usesNativeStructuredOutput(model: Model<Api>): boolean {
+	if (model.api === "anthropic-messages") return true;
 	if (model.api !== "bedrock-converse-stream") return false;
 	const identifiers = `${model.id} ${model.name}`.toLowerCase();
 	return /claude-(?:sonnet|haiku|opus)-4-(?:5|6)(?:[^0-9]|$)/.test(identifiers);
 }
 
 function rejectsUnsupportedBedrockStructuredOutput(model: Model<Api>): boolean {
-	return model.api === "bedrock-converse-stream" && !usesNativeBedrockStructuredOutput(model);
+	return model.api === "bedrock-converse-stream" && !usesNativeStructuredOutput(model);
 }
 
 function structuredToolChoice(model: Model<Api>, toolName: string): Record<string, unknown> {
@@ -372,11 +373,11 @@ export async function completeStructured<TParameters extends StructuredOutputSch
 
 	const outputTool: Tool = { name: toolName, description: toolDescription, parameters: parameters as TSchema };
 	const { toolName: _toolName, toolDescription: _toolDescription, ...providerOptions } = options;
-	const nativeBedrock = usesNativeBedrockStructuredOutput(model);
+	const nativeStructured = usesNativeStructuredOutput(model);
 	const message = await complete(
 		model,
-		nativeBedrock ? context : { ...context, tools: [outputTool] },
-		nativeBedrock
+		nativeStructured ? context : { ...context, tools: [outputTool] },
+		nativeStructured
 			? { ...providerOptions, outputSchema: { name: toolName, schema: parameters } }
 			: { ...providerOptions, ...structuredToolChoice(model, toolName) },
 	);
@@ -385,7 +386,7 @@ export async function completeStructured<TParameters extends StructuredOutputSch
 		throw new Error(message.errorMessage ?? `Structured completion failed with stop reason: ${message.stopReason}`);
 	}
 
-	if (nativeBedrock) {
+	if (nativeStructured) {
 		const text = message.content
 			.filter((block): block is TextContent => block.type === "text")
 			.map((block) => block.text)
@@ -394,7 +395,7 @@ export async function completeStructured<TParameters extends StructuredOutputSch
 		try {
 			arguments_ = JSON.parse(text);
 		} catch {
-			throw new Error("Native Bedrock structured output was not valid JSON");
+			throw new Error("Native structured output was not valid JSON");
 		}
 		return {
 			value: validateToolArguments(outputTool, {

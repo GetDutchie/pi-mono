@@ -128,7 +128,7 @@ describe("completeStructured", () => {
 			),
 		).rejects.toThrow("captured");
 		expect(payload).toMatchObject({
-			tool_choice: { type: "tool", name: "submit_structured_output", disable_parallel_tool_use: true },
+			output_config: { format: { type: "json_schema" } },
 		});
 	});
 
