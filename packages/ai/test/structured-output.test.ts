@@ -99,6 +99,72 @@ describe("completeStructured", () => {
 		).rejects.toThrow('Validation failed for tool "submit_structured_output"');
 	});
 
+	it("uses Bedrock native JSON Schema output instead of an internal tool", async () => {
+		const model: Model<"bedrock-converse-stream"> = {
+			id: "us.anthropic.claude-sonnet-4-6",
+			name: "Bedrock Claude Test",
+			api: "bedrock-converse-stream",
+			provider: "test-provider",
+			baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1_000,
+			maxTokens: 100,
+		};
+		let payload: unknown;
+
+		await expect(
+			completeStructured(
+				model,
+				{ messages: [{ role: "user", content: "Return a result", timestamp: Date.now() }] },
+				resultSchema,
+				{
+					apiKey: "test-key",
+					onPayload: (nextPayload) => {
+						payload = nextPayload;
+						throw new Error("stop after payload capture");
+					},
+				},
+			),
+		).rejects.toThrow("stop after payload capture");
+
+		expect(payload).toMatchObject({
+			outputConfig: {
+				textFormat: {
+					type: "json_schema",
+					structure: {
+						jsonSchema: { name: "submit_structured_output" },
+					},
+				},
+			},
+		});
+		expect(payload).toMatchObject({ toolConfig: undefined });
+	});
+
+	it("rejects unsupported Bedrock models rather than silently using a non-constrained fallback", async () => {
+		const model: Model<"bedrock-converse-stream"> = {
+			id: "us.anthropic.claude-opus-4-8",
+			name: "Bedrock Claude Opus 4.8",
+			api: "bedrock-converse-stream",
+			provider: "test-provider",
+			baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1_000,
+			maxTokens: 100,
+		};
+
+		await expect(
+			completeStructured(
+				model,
+				{ messages: [{ role: "user", content: "Return a result", timestamp: Date.now() }] },
+				resultSchema,
+			),
+		).rejects.toThrow("Native Bedrock structured output is unsupported");
+	});
+
 	it("forces the output tool in OpenAI Responses payloads", async () => {
 		const model: Model<"openai-responses"> = {
 			id: "test-model",

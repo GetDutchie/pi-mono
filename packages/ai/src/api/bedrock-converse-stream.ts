@@ -96,6 +96,8 @@ export interface BedrockOptions extends StreamOptions {
 	 * Set via AWS_BEARER_TOKEN_BEDROCK env var or pass directly.
 	 * @see https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonbedrock.html */
 	bearerToken?: string;
+	/** Native Bedrock Converse structured text output. Internal structured-completion use only. */
+	outputSchema?: { name: string; schema: Record<string, unknown> };
 }
 
 type Block = (TextContent | ThinkingContent | ToolCall) & { index?: number; partialJson?: string };
@@ -229,6 +231,19 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					...(options.temperature !== undefined && { temperature: options.temperature }),
 				},
 				toolConfig: convertToolConfig(context.tools, options.toolChoice),
+				...(options.outputSchema && {
+					outputConfig: {
+						textFormat: {
+							type: "json_schema" as const,
+							structure: {
+								jsonSchema: {
+									name: options.outputSchema.name,
+									schema: JSON.stringify(options.outputSchema.schema),
+								},
+							},
+						},
+					},
+				}),
 				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
 				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 			};

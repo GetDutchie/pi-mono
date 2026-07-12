@@ -52,6 +52,7 @@ import type {
 	SimpleStreamOptions,
 	StreamFunction,
 	StreamOptions,
+	TextContent,
 	Tool,
 	ToolCall,
 } from "./types.ts";
@@ -307,10 +308,19 @@ const DEFAULT_STRUCTURED_OUTPUT_TOOL_NAME = "submit_structured_output";
 const DEFAULT_STRUCTURED_OUTPUT_TOOL_DESCRIPTION = "Return the requested structured output using this function.";
 const STRUCTURED_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
+function usesNativeBedrockStructuredOutput(model: Model<Api>): boolean {
+	if (model.api !== "bedrock-converse-stream") return false;
+	const identifiers = `${model.id} ${model.name}`.toLowerCase();
+	return /claude-(?:sonnet|haiku|opus)-4-(?:5|6)(?:[^0-9]|$)/.test(identifiers);
+}
+
+function rejectsUnsupportedBedrockStructuredOutput(model: Model<Api>): boolean {
+	return model.api === "bedrock-converse-stream" && !usesNativeBedrockStructuredOutput(model);
+}
+
 function structuredToolChoice(model: Model<Api>, toolName: string): Record<string, unknown> {
 	switch (model.api) {
 		case "anthropic-messages":
-		case "bedrock-converse-stream":
 			return { toolChoice: { type: "tool", name: toolName } };
 		case "openai-completions":
 		case "mistral-conversations":
@@ -354,16 +364,47 @@ export async function completeStructured<TParameters extends StructuredOutputSch
 		throw new Error("Structured output tool description must not be empty");
 	}
 
+	if (rejectsUnsupportedBedrockStructuredOutput(model)) {
+		throw new Error(
+			`Native Bedrock structured output is unsupported for ${model.id}. Use a Bedrock Claude 4.5/4.6 model or a provider with native schema-constrained output.`,
+		);
+	}
+
 	const outputTool: Tool = { name: toolName, description: toolDescription, parameters: parameters as TSchema };
 	const { toolName: _toolName, toolDescription: _toolDescription, ...providerOptions } = options;
+	const nativeBedrock = usesNativeBedrockStructuredOutput(model);
 	const message = await complete(
 		model,
-		{ ...context, tools: [outputTool] },
-		{ ...providerOptions, ...structuredToolChoice(model, toolName) },
+		nativeBedrock ? context : { ...context, tools: [outputTool] },
+		nativeBedrock
+			? { ...providerOptions, outputSchema: { name: toolName, schema: parameters } }
+			: { ...providerOptions, ...structuredToolChoice(model, toolName) },
 	);
 
 	if (message.stopReason === "error" || message.stopReason === "aborted") {
 		throw new Error(message.errorMessage ?? `Structured completion failed with stop reason: ${message.stopReason}`);
+	}
+
+	if (nativeBedrock) {
+		const text = message.content
+			.filter((block): block is TextContent => block.type === "text")
+			.map((block) => block.text)
+			.join("");
+		let arguments_: unknown;
+		try {
+			arguments_ = JSON.parse(text);
+		} catch {
+			throw new Error("Native Bedrock structured output was not valid JSON");
+		}
+		return {
+			value: validateToolArguments(outputTool, {
+				type: "toolCall",
+				id: "native_structured_output",
+				name: toolName,
+				arguments: arguments_ as Record<string, unknown>,
+			}) as StructuredOutputValue<TParameters>,
+			message,
+		};
 	}
 
 	const outputCalls = message.content.filter(

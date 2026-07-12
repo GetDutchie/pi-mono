@@ -501,7 +501,7 @@ context.messages.push({
 
 Use `completeStructured()` for a **one-shot typed result** such as a classifier, reviewer verdict, or database mutation proposal. It is an additive API on the compat entrypoint; it does not change `complete()`, `stream()`, `completeSimple()`, `streamSimple()`, or the normal agent-tool contract.
 
-`completeStructured()` owns the request's only tool slot. It sends one private output tool, forces that tool for built-in provider APIs where the provider supports forcing, applies native schema constraints where available, and validates the returned arguments against the original schema. It rejects text output: do **not** ask a model for JSON text and then use regex extraction or `JSON.parse()` as a production structured-output path.
+`completeStructured()` owns the request's only structured-output slot. On Bedrock Claude 4.5/4.6 it uses Converse native `outputConfig.textFormat` JSON Schema output; other supported builtin APIs use their provider-native structured/tool facility and the original schema is always validated again locally. Unsupported Bedrock models fail explicitly rather than silently falling back to an unconstrained tool path. Native Bedrock structured output is decoded only from its exact JSON Schema response, never by extracting JSON from arbitrary assistant prose. Do **not** ask a model for JSON text and then use regex extraction or `JSON.parse()` as a production structured-output path.
 
 ```typescript
 import { completeStructured } from '@earendil-works/pi-ai/compat';
