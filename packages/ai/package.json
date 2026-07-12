@@ -17,7 +17,8 @@
 		},
 		"./compat": {
 			"types": "./dist/compat.d.ts",
-			"import": "./dist/compat.js"
+			"import": "./dist/compat.js",
+			"require": "./dist/compat.js"
 		},
 		"./providers/*": {
 			"types": "./dist/providers/*.d.ts",
