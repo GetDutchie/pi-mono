@@ -36,6 +36,7 @@ import type {
 	Usage,
 } from "../types.ts";
 import { combineAbortSignals } from "../utils/abort-signals.ts";
+import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import {
 	appendAssistantMessageDiagnostic,
 	createAssistantMessageDiagnostic,
@@ -481,8 +482,11 @@ function buildRequestBody(
 	context: Context,
 	options?: OpenAICodexResponsesOptions,
 ): RequestBody {
+	const toolPlacement = splitDeferredTools(context, model.compat?.supportsToolSearch ?? false);
 	const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, {
 		includeSystemPrompt: false,
+		deferredTools: toolPlacement.deferred,
+		strict: null,
 	});
 
 	const body: RequestBody = {
@@ -506,8 +510,8 @@ function buildRequestBody(
 		body.service_tier = options.serviceTier;
 	}
 
-	if (context.tools && context.tools.length > 0) {
-		body.tools = convertResponsesTools(context.tools, { strict: null });
+	if (toolPlacement.immediate.length > 0) {
+		body.tools = convertResponsesTools(toolPlacement.immediate, { strict: null });
 	}
 
 	if (options?.reasoningEffort !== undefined) {
