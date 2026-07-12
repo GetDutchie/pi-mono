@@ -99,7 +99,31 @@ describe("completeStructured", () => {
 		).rejects.toThrow('Validation failed for tool "submit_structured_output"');
 	});
 
-	it("disables parallel Anthropic tool use for the single structured result", async () => {
+	it("rejects Anthropic-unsupported schema keywords before any request, naming the paths", async () => {
+		const model: Model<"anthropic-messages"> = {
+			id: "claude-opus-4-8",
+			name: "Claude Opus 4.8",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1_000,
+			maxTokens: 100,
+		};
+		await expect(
+			completeStructured(
+				model,
+				{ messages: [{ role: "user", content: "Return", timestamp: Date.now() }] },
+				resultSchema,
+				{ apiKey: "test-key" },
+			),
+		).rejects.toThrow(/properties\.confidence\.minimum, properties\.confidence\.maximum/);
+	});
+
+	it("sends the native Anthropic json_schema output format for a supported schema", async () => {
+		const structuralSchema = Type.Object({ answer: Type.String() });
 		const model: Model<"anthropic-messages"> = {
 			id: "claude-opus-4-8",
 			name: "Claude Opus 4.8",
@@ -117,7 +141,7 @@ describe("completeStructured", () => {
 			completeStructured(
 				model,
 				{ messages: [{ role: "user", content: "Return", timestamp: Date.now() }] },
-				resultSchema,
+				structuralSchema,
 				{
 					apiKey: "test-key",
 					onPayload: (nextPayload) => {

@@ -308,6 +308,60 @@ const DEFAULT_STRUCTURED_OUTPUT_TOOL_NAME = "submit_structured_output";
 const DEFAULT_STRUCTURED_OUTPUT_TOOL_DESCRIPTION = "Return the requested structured output using this function.";
 const STRUCTURED_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
+/**
+ * JSON Schema keywords Anthropic's native structured-output grammar rejects
+ * with a 400. We fail fast with the exact offending paths instead of silently
+ * stripping constraints: the consumer decides how to express bounds (e.g.
+ * enforce them in application-level validation and omit them from the
+ * transmitted schema).
+ */
+const ANTHROPIC_UNSUPPORTED_SCHEMA_KEYWORDS = new Set([
+	"minimum",
+	"maximum",
+	"exclusiveMinimum",
+	"exclusiveMaximum",
+	"multipleOf",
+	"minLength",
+	"maxLength",
+	"pattern",
+	"minItems",
+	"maxItems",
+	"uniqueItems",
+	"minProperties",
+	"maxProperties",
+	"not",
+]);
+
+function collectUnsupportedAnthropicKeywords(node: unknown, path: string, found: string[]): void {
+	if (Array.isArray(node)) {
+		for (const [index, item] of node.entries()) {
+			collectUnsupportedAnthropicKeywords(item, `${path}[${index}]`, found);
+		}
+		return;
+	}
+	if (node === null || typeof node !== "object") return;
+	for (const [key, value] of Object.entries(node)) {
+		const childPath = path ? `${path}.${key}` : key;
+		if (ANTHROPIC_UNSUPPORTED_SCHEMA_KEYWORDS.has(key)) {
+			found.push(childPath);
+			continue;
+		}
+		collectUnsupportedAnthropicKeywords(value, childPath, found);
+	}
+}
+
+function assertAnthropicNativeSchemaCompatible(schema: Record<string, unknown>): void {
+	const offending: string[] = [];
+	collectUnsupportedAnthropicKeywords(schema, "", offending);
+	if (offending.length > 0) {
+		throw new Error(
+			"Anthropic native structured output rejects these JSON Schema keywords; " +
+				"remove them from the transmitted schema and enforce the constraints in " +
+				`application-level validation instead: ${offending.join(", ")}`,
+		);
+	}
+}
+
 function usesNativeStructuredOutput(model: Model<Api>): boolean {
 	if (model.api === "anthropic-messages") return true;
 	if (model.api !== "bedrock-converse-stream") return false;
@@ -374,6 +428,9 @@ export async function completeStructured<TParameters extends StructuredOutputSch
 	const outputTool: Tool = { name: toolName, description: toolDescription, parameters: parameters as TSchema };
 	const { toolName: _toolName, toolDescription: _toolDescription, ...providerOptions } = options;
 	const nativeStructured = usesNativeStructuredOutput(model);
+	if (model.api === "anthropic-messages") {
+		assertAnthropicNativeSchemaCompatible(parameters as Record<string, unknown>);
+	}
 	const message = await complete(
 		model,
 		nativeStructured ? context : { ...context, tools: [outputTool] },
