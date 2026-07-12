@@ -321,7 +321,7 @@ function rejectsUnsupportedBedrockStructuredOutput(model: Model<Api>): boolean {
 function structuredToolChoice(model: Model<Api>, toolName: string): Record<string, unknown> {
 	switch (model.api) {
 		case "anthropic-messages":
-			return { toolChoice: { type: "tool", name: toolName } };
+			return { toolChoice: { type: "tool", name: toolName, disableParallelToolUse: true } };
 		case "openai-completions":
 		case "mistral-conversations":
 			return { toolChoice: { type: "function", function: { name: toolName } } };

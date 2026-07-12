@@ -250,7 +250,7 @@ export interface AnthropicOptions extends StreamOptions {
 	 * choices; `{ type: "tool", name }` forces a specific tool.
 	 * Default: omitted (Anthropic default behavior, currently equivalent to auto).
 	 */
-	toolChoice?: "auto" | "any" | "none" | { type: "tool"; name: string };
+	toolChoice?: "auto" | "any" | "none" | { type: "tool"; name: string; disableParallelToolUse?: boolean };
 	/**
 	 * Pre-built Anthropic client instance. When provided, skips internal client
 	 * construction entirely. Use this to inject alternative SDK clients such as
@@ -1056,7 +1056,11 @@ function buildParams(
 		if (typeof options.toolChoice === "string") {
 			params.tool_choice = { type: options.toolChoice };
 		} else {
-			params.tool_choice = options.toolChoice;
+			params.tool_choice = {
+				type: options.toolChoice.type,
+				name: options.toolChoice.name,
+				...(options.toolChoice.disableParallelToolUse ? { disable_parallel_tool_use: true } : {}),
+			};
 		}
 	}
 

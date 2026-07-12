@@ -99,6 +99,39 @@ describe("completeStructured", () => {
 		).rejects.toThrow('Validation failed for tool "submit_structured_output"');
 	});
 
+	it("disables parallel Anthropic tool use for the single structured result", async () => {
+		const model: Model<"anthropic-messages"> = {
+			id: "claude-opus-4-8",
+			name: "Claude Opus 4.8",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1_000,
+			maxTokens: 100,
+		};
+		let payload: unknown;
+		await expect(
+			completeStructured(
+				model,
+				{ messages: [{ role: "user", content: "Return", timestamp: Date.now() }] },
+				resultSchema,
+				{
+					apiKey: "test-key",
+					onPayload: (nextPayload) => {
+						payload = nextPayload;
+						throw new Error("captured");
+					},
+				},
+			),
+		).rejects.toThrow("captured");
+		expect(payload).toMatchObject({
+			tool_choice: { type: "tool", name: "submit_structured_output", disable_parallel_tool_use: true },
+		});
+	});
+
 	it("uses Bedrock native JSON Schema output instead of an internal tool", async () => {
 		const model: Model<"bedrock-converse-stream"> = {
 			id: "us.anthropic.claude-sonnet-4-6",
