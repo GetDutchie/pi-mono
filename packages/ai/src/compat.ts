@@ -27,6 +27,7 @@ export * from "./index.ts";
 export * from "./legacy-api-aliases.ts";
 export * from "./providers/images/register-builtins.ts";
 
+import type { Static, TSchema } from "typebox";
 import { anthropicMessagesApi } from "./api/anthropic-messages.lazy.ts";
 import { azureOpenAIResponsesApi } from "./api/azure-openai-responses.lazy.ts";
 import { bedrockConverseStreamApi } from "./api/bedrock-converse-stream.lazy.ts";
@@ -51,7 +52,10 @@ import type {
 	SimpleStreamOptions,
 	StreamFunction,
 	StreamOptions,
+	Tool,
+	ToolCall,
 } from "./types.ts";
+import { validateToolArguments } from "./utils/validation.ts";
 
 /** @deprecated Static catalog read. Use `getBuiltinModel` from "@earendil-works/pi-ai/providers/all" or `Models.getModel()`. */
 export const getModel = getBuiltinModel;
@@ -275,4 +279,102 @@ export async function completeSimple<TApi extends Api>(
 ): Promise<AssistantMessage> {
 	const s = streamSimple(model, context, options);
 	return s.result();
+}
+
+/** A TypeBox schema or a plain JSON Schema object, such as one derived from Zod. */
+export type StructuredOutputSchema = TSchema | Record<string, unknown>;
+
+/** Preserves TypeBox inference while keeping JSON Schema output explicitly unknown. */
+export type StructuredOutputValue<TSchemaValue extends StructuredOutputSchema> = TSchemaValue extends TSchema
+	? Static<TSchemaValue>
+	: unknown;
+
+/** Options for a schema-constrained structured completion. */
+export interface StructuredCompletionOptions extends ProviderStreamOptions {
+	/** Internal function name sent to the provider. It must be valid for every builtin provider. */
+	toolName?: string;
+	/** Description sent with the internal output function. */
+	toolDescription?: string;
+}
+
+/** A provider response whose output arguments passed the original TypeBox schema. */
+export interface StructuredCompletion<T> {
+	value: T;
+	message: AssistantMessage;
+}
+
+const DEFAULT_STRUCTURED_OUTPUT_TOOL_NAME = "submit_structured_output";
+const DEFAULT_STRUCTURED_OUTPUT_TOOL_DESCRIPTION = "Return the requested structured output using this function.";
+const STRUCTURED_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+function structuredToolChoice(model: Model<Api>, toolName: string): Record<string, unknown> {
+	switch (model.api) {
+		case "anthropic-messages":
+		case "bedrock-converse-stream":
+			return { toolChoice: { type: "tool", name: toolName } };
+		case "openai-completions":
+		case "mistral-conversations":
+			return { toolChoice: { type: "function", function: { name: toolName } } };
+		case "openai-responses":
+		case "azure-openai-responses":
+		case "openai-codex-responses":
+			return { toolChoice: { type: "function", name: toolName } };
+		case "google-generative-ai":
+		case "google-vertex":
+			return { toolChoice: "any" };
+		default:
+			// Custom providers receive the output tool and are responsible for
+			// honoring it. Builtin APIs above always force it natively.
+			return {};
+	}
+}
+
+/**
+ * Produces a typed JSON value through a provider tool call, never by parsing
+ * assistant text. Builtin providers receive a single forced output tool; their
+ * normal tool-schema conversion applies provider-native strict constraints
+ * where available, and the original TypeBox schema is always validated here.
+ */
+export async function completeStructured<TParameters extends StructuredOutputSchema>(
+	model: Model<Api>,
+	context: Context,
+	parameters: TParameters,
+	options: StructuredCompletionOptions = {},
+): Promise<StructuredCompletion<StructuredOutputValue<TParameters>>> {
+	if (context.tools?.length) {
+		throw new Error("completeStructured does not accept context.tools; structured output owns the only tool slot");
+	}
+
+	const toolName = options.toolName ?? DEFAULT_STRUCTURED_OUTPUT_TOOL_NAME;
+	if (!STRUCTURED_TOOL_NAME_PATTERN.test(toolName)) {
+		throw new Error(`Invalid structured output tool name: ${toolName}`);
+	}
+	const toolDescription = options.toolDescription ?? DEFAULT_STRUCTURED_OUTPUT_TOOL_DESCRIPTION;
+	if (!toolDescription.trim()) {
+		throw new Error("Structured output tool description must not be empty");
+	}
+
+	const outputTool: Tool = { name: toolName, description: toolDescription, parameters: parameters as TSchema };
+	const { toolName: _toolName, toolDescription: _toolDescription, ...providerOptions } = options;
+	const message = await complete(
+		model,
+		{ ...context, tools: [outputTool] },
+		{ ...providerOptions, ...structuredToolChoice(model, toolName) },
+	);
+
+	if (message.stopReason === "error" || message.stopReason === "aborted") {
+		throw new Error(message.errorMessage ?? `Structured completion failed with stop reason: ${message.stopReason}`);
+	}
+
+	const outputCalls = message.content.filter(
+		(block): block is ToolCall => block.type === "toolCall" && block.name === toolName,
+	);
+	if (outputCalls.length !== 1) {
+		throw new Error(`Structured completion expected exactly one ${toolName} call, received ${outputCalls.length}`);
+	}
+
+	return {
+		value: validateToolArguments(outputTool, outputCalls[0]) as StructuredOutputValue<TParameters>,
+		message,
+	};
 }

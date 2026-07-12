@@ -54,6 +54,8 @@ function formatAzureOpenAIError(error: unknown): string {
 export interface AzureOpenAIResponsesOptions extends StreamOptions {
 	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	reasoningSummary?: "auto" | "detailed" | "concise" | null;
+	/** Force or constrain Responses API function selection. */
+	toolChoice?: ResponseCreateParamsStreaming["tool_choice"];
 	azureApiVersion?: string;
 	azureResourceName?: string;
 	azureBaseUrl?: string;
@@ -279,6 +281,9 @@ function buildParams(
 		const strictEnabled =
 			model.compat?.supportsStrictMode !== false && getProviderEnvValue("PI_STRICT_TOOLS", options?.env) !== "0";
 		params.tools = convertResponsesTools(context.tools, { strict: strictEnabled === true });
+		if (options?.toolChoice !== undefined) {
+			params.tool_choice = options.toolChoice;
+		}
 	}
 
 	if (model.reasoning) {

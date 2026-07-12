@@ -8,6 +8,7 @@ interface AnthropicToolPayload {
 	name: string;
 	description?: string;
 	defer_loading?: boolean;
+	strict?: boolean;
 }
 
 interface AnthropicContentBlock {
@@ -41,7 +42,7 @@ interface OpenAIToolSearchOutput {
 	call_id?: string | null;
 	execution?: string;
 	status?: string | null;
-	tools: Array<{ type: string; name: string; defer_loading?: boolean }>;
+	tools: Array<{ type: string; name: string; defer_loading?: boolean; strict?: boolean }>;
 }
 
 interface OpenAIPayload {
@@ -144,7 +145,10 @@ describe("deferred tools", () => {
 		const context = makeContext([makeTool("base_tool"), makeTool("late_tool")]);
 		const payload = await capturePayload<AnthropicPayload>(getModel("anthropic", "claude-opus-4-6"), context);
 
-		expect(payload.tools).toMatchObject([{ name: "base_tool" }, { name: "late_tool", defer_loading: true }]);
+		expect(payload.tools).toMatchObject([
+			{ name: "base_tool", strict: true },
+			{ name: "late_tool", defer_loading: true, strict: true },
+		]);
 		expect(findAnthropicToolResult(payload).content).toEqual([{ type: "tool_reference", tool_name: "late_tool" }]);
 	});
 
@@ -308,7 +312,9 @@ describe("deferred tools", () => {
 		expect(openAIToolNames(payload)).toEqual(["base_tool"]);
 		expect(searchCall).toMatchObject({ execution: "client", status: "completed" });
 		expect(searchOutput?.call_id).toBe(searchCall?.call_id);
-		expect(searchOutput?.tools).toMatchObject([{ type: "function", name: "late_tool", defer_loading: true }]);
+		expect(searchOutput?.tools).toMatchObject([
+			{ type: "function", name: "late_tool", defer_loading: true, strict: true },
+		]);
 	});
 
 	it.each(["gpt-5.2", "gpt-5.4-nano", "gpt-5.5-pro"] as const)(

@@ -22,6 +22,7 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
 - [Tools](#tools)
   - [Defining Tools](#defining-tools)
   - [Handling Tool Calls](#handling-tool-calls)
+  - [Schema-Constrained Structured Output](#schema-constrained-structured-output)
   - [Streaming Tool Calls with Partial JSON](#streaming-tool-calls-with-partial-json)
   - [Validating Tool Arguments](#validating-tool-arguments)
   - [Complete Event Reference](#complete-event-reference)
@@ -495,6 +496,52 @@ context.messages.push({
   timestamp: Date.now()
 });
 ```
+
+### Schema-Constrained Structured Output
+
+Use `completeStructured()` for a **one-shot typed result** such as a classifier, reviewer verdict, or database mutation proposal. It is an additive API on the compat entrypoint; it does not change `complete()`, `stream()`, `completeSimple()`, `streamSimple()`, or the normal agent-tool contract.
+
+`completeStructured()` owns the request's only tool slot. It sends one private output tool, forces that tool for built-in provider APIs where the provider supports forcing, applies native schema constraints where available, and validates the returned arguments against the original schema. It rejects text output: do **not** ask a model for JSON text and then use regex extraction or `JSON.parse()` as a production structured-output path.
+
+```typescript
+import { completeStructured } from '@earendil-works/pi-ai/compat';
+import { Type } from '@earendil-works/pi-ai';
+
+const verdictSchema = Type.Object({
+  verdict: Type.Union([Type.Literal('approve'), Type.Literal('reject')]),
+  reason: Type.String(),
+});
+
+const { value, message } = await completeStructured(
+  model,
+  {
+    systemPrompt: 'Evaluate the proposal.',
+    messages: [{ role: 'user', content: 'Proposal: ...', timestamp: Date.now() }],
+  },
+  verdictSchema,
+);
+// value is inferred as { verdict: 'approve' | 'reject'; reason: string }
+// message preserves provider usage, response id, and audit details.
+```
+
+Plain JSON Schema is also accepted, so applications can derive a provider schema from Zod and retain Zod as their application-level control:
+
+```typescript
+import { z } from 'zod';
+import { completeStructured } from '@earendil-works/pi-ai/compat';
+
+const verdict = z.object({
+  verdict: z.enum(['approve', 'reject']),
+  reason: z.string().min(1),
+});
+
+const { value } = await completeStructured(model, context, z.toJSONSchema(verdict));
+const parsed = verdict.safeParse(value);
+if (!parsed.success) throw new Error('Provider output failed the application schema');
+// parsed.data is the only value the application should apply.
+```
+
+Use normal `Context.tools` and `complete()`/`stream()` for an agent that must invoke business tools and receive tool results over multiple turns. `completeStructured()` deliberately rejects a context that already contains tools, because mixing action tools with an output-only tool makes it ambiguous which result is the structured answer.
 
 ### Streaming Tool Calls with Partial JSON
 
