@@ -6,11 +6,13 @@ import type {
 	ResponseInput,
 	ResponseInputContent,
 	ResponseInputImage,
+	ResponseInputItem,
 	ResponseInputText,
 	ResponseOutputItem,
 	ResponseOutputMessage,
 	ResponseReasoningItem,
 	ResponseStreamEvent,
+	ResponseToolSearchOutputItemParam,
 } from "openai/resources/responses/responses.js";
 import { calculateCost } from "../models.ts";
 import type {
@@ -78,11 +80,16 @@ export interface OpenAIResponsesStreamOptions {
 
 export interface ConvertResponsesMessagesOptions {
 	includeSystemPrompt?: boolean;
+	deferredTools?: ReadonlyMap<string, Tool>;
+	strict?: boolean | null;
 }
 
 export interface ConvertResponsesToolsOptions {
 	strict?: boolean | null;
+	deferLoading?: boolean;
 }
+
+type OpenAIFunctionTool = Extract<OpenAITool, { type: "function" }>;
 
 // =============================================================================
 // Message conversion
@@ -95,6 +102,7 @@ export function convertResponsesMessages<TApi extends Api>(
 	options?: ConvertResponsesMessagesOptions,
 ): ResponseInput {
 	const messages: ResponseInput = [];
+	const loadedToolNames = new Set<string>();
 
 	const normalizeIdPart = (part: string): string => {
 		const sanitized = part.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -260,6 +268,35 @@ export function convertResponsesMessages<TApi extends Api>(
 				call_id: callId,
 				output,
 			});
+
+			const deferredTools: Tool[] = [];
+			for (const name of msg.addedToolNames ?? []) {
+				const tool = options?.deferredTools?.get(name);
+				if (!tool || loadedToolNames.has(name)) continue;
+				loadedToolNames.add(name);
+				deferredTools.push(tool);
+			}
+			if (deferredTools.length > 0) {
+				const names = deferredTools.map((tool) => tool.name);
+				const searchCallId = `pi_tool_load_${shortHash(`${msg.toolCallId}:${names.join(",")}`)}`;
+				messages.push({
+					type: "tool_search_call",
+					call_id: searchCallId,
+					execution: "client",
+					status: "completed",
+					arguments: { query: names.join(" "), limit: names.length },
+				} satisfies ResponseInputItem);
+				messages.push({
+					type: "tool_search_output",
+					call_id: searchCallId,
+					execution: "client",
+					status: "completed",
+					tools: convertResponsesTools(deferredTools, {
+						strict: options?.strict,
+						deferLoading: true,
+					}),
+				} satisfies ResponseToolSearchOutputItemParam);
+			}
 		}
 		msgIndex++;
 	}
@@ -271,32 +308,36 @@ export function convertResponsesMessages<TApi extends Api>(
 // Tool conversion
 // =============================================================================
 
-export function convertResponsesTools(tools: Tool[], options?: ConvertResponsesToolsOptions): OpenAITool[] {
-	// Default is now STRICT: the provider logit-masks tool-call arguments
-	// against the schema grammar (native structured output), which replaces
-	// the validate-and-reprompt loop for schema conformance. Per-tool
-	// fallback: a schema that cannot be expressed in the strict subset is
-	// sent unstrict and keeps the loop as its enforcement. Callers can pass
-	// strict: false (providers without strict support) or strict: null
-	// (codex) to preserve the legacy behavior wholesale.
-	const strict = options?.strict === undefined ? true : options.strict;
-	if (strict !== true) {
-		return tools.map((tool) => ({
-			type: "function",
-			name: tool.name,
-			description: tool.description,
-			parameters: tool.parameters as any, // TypeBox already generates JSON Schema
-			strict,
-		}));
-	}
-	return tools.map((tool) => {
-		const strictSchema = strictToolSchema(tool.parameters);
+export function convertResponsesTools(tools: readonly Tool[], options?: ConvertResponsesToolsOptions): OpenAITool[] {
+	// options.strict is the batch-level provider/env gate: true means the
+	// provider supports strict mode and PI_STRICT_TOOLS != "0"; false/null
+	// means the provider is unsupported or the kill switch is engaged. Each
+	// tool additionally opts in via `tool.strict === true`; ordinary tools
+	// are never strictified even when the gate is open. Deferred loading is
+	// orthogonal and must preserve the same per-tool decision as immediate
+	// tools.
+	// Fail closed when a future caller forgets to declare provider support.
+	const gate = options?.strict === undefined ? false : options.strict;
+	const nonStrictValue = gate === true ? false : gate;
+	return tools.map((tool): OpenAIFunctionTool => {
+		if (gate === true && tool.strict === true) {
+			const strictSchema = strictToolSchema(tool.parameters);
+			return {
+				type: "function",
+				name: tool.name,
+				description: tool.description,
+				parameters: (strictSchema ?? tool.parameters) as Record<string, unknown>,
+				strict: strictSchema !== null,
+				...(options?.deferLoading ? { defer_loading: true } : {}),
+			};
+		}
 		return {
 			type: "function",
 			name: tool.name,
 			description: tool.description,
-			parameters: (strictSchema ?? tool.parameters) as any,
-			strict: strictSchema !== null,
+			parameters: tool.parameters as Record<string, unknown>,
+			strict: nonStrictValue,
+			...(options?.deferLoading ? { defer_loading: true } : {}),
 		};
 	});
 }
