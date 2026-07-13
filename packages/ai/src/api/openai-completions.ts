@@ -1105,11 +1105,13 @@ function convertTools(
 ): OpenAI.Chat.Completions.ChatCompletionTool[] {
 	return tools.map((tool) => {
 		// Native structured output: strict tool schemas (grammar-constrained
-		// arguments) on providers that support strict mode. Per-tool fallback:
-		// an unstrictifiable schema is sent unstrict (reprompt-loop
-		// enforcement). Providers without strict support omit the field.
-		const strictSchema =
-			strictEnabled && compat.supportsStrictMode !== false ? strictToolSchema(tool.parameters) : null;
+		// arguments) on providers that support strict mode, opted into per tool
+		// via `tool.strict === true`. Per-tool fallback: an unstrictifiable
+		// schema is sent unstrict (reprompt-loop enforcement). Providers
+		// without strict support omit the field. PI_STRICT_TOOLS=0 is a
+		// global emergency kill switch and never makes ordinary tools strict.
+		const wantsStrict = strictEnabled && compat.supportsStrictMode !== false && tool.strict === true;
+		const strictSchema = wantsStrict ? strictToolSchema(tool.parameters) : null;
 		return {
 			type: "function",
 			function: {

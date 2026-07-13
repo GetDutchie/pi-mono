@@ -440,6 +440,8 @@ export interface Tool<TParameters extends TSchema = TSchema> {
 	name: string;
 	description: string;
 	parameters: TParameters;
+	/** Opt in to provider-native strict schema/argument enforcement for this tool. Default: false. */
+	strict?: boolean;
 }
 
 export interface Context {
