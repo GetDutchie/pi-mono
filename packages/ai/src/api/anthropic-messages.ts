@@ -1303,9 +1303,13 @@ function convertTools(
 	return tools.map((tool, index) => {
 		// Strict tool use (GA): Anthropic logit-masks tool inputs against the
 		// schema grammar — native structured output, replacing the
-		// validate-and-reprompt loop for schema conformance. Per-tool fallback:
-		// an unstrictifiable schema is sent without strict and keeps the loop.
-		const strictSchema = options.strictEnabled !== false ? anthropicStrictToolSchema(tool.parameters) : null;
+		// validate-and-reprompt loop for schema conformance. Opt-in per tool via
+		// `tool.strict === true`; ordinary tools keep the reprompt loop. Per-tool
+		// fallback: an unstrictifiable opted-in schema is sent without strict
+		// and keeps the loop. PI_STRICT_TOOLS=0 is a global emergency kill
+		// switch and never makes ordinary tools strict.
+		const wantsStrict = options.strictEnabled !== false && tool.strict === true;
+		const strictSchema = wantsStrict ? anthropicStrictToolSchema(tool.parameters) : null;
 		const schema = (strictSchema ?? tool.parameters) as { properties?: unknown; required?: string[] };
 
 		return {

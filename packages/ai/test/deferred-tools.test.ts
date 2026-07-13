@@ -52,11 +52,12 @@ interface OpenAIPayload {
 
 class PayloadCaptured extends Error {}
 
-function makeTool(name: string): Tool {
+function makeTool(name: string, options?: { strict?: boolean }): Tool {
 	return {
 		name,
 		description: `The ${name} tool`,
 		parameters: Type.Object({ value: Type.String() }),
+		...(options?.strict !== undefined ? { strict: options.strict } : {}),
 	};
 }
 
@@ -145,11 +146,19 @@ describe("deferred tools", () => {
 		const context = makeContext([makeTool("base_tool"), makeTool("late_tool")]);
 		const payload = await capturePayload<AnthropicPayload>(getModel("anthropic", "claude-opus-4-6"), context);
 
+		expect(payload.tools).toMatchObject([{ name: "base_tool" }, { name: "late_tool", defer_loading: true }]);
+		expect(payload.tools?.every((tool) => tool.strict !== true)).toBe(true);
+		expect(findAnthropicToolResult(payload).content).toEqual([{ type: "tool_reference", tool_name: "late_tool" }]);
+	});
+
+	it("strictifies only opted-in immediate and deferred Anthropic tools", async () => {
+		const context = makeContext([makeTool("base_tool", { strict: true }), makeTool("late_tool", { strict: true })]);
+		const payload = await capturePayload<AnthropicPayload>(getModel("anthropic", "claude-opus-4-6"), context);
+
 		expect(payload.tools).toMatchObject([
 			{ name: "base_tool", strict: true },
 			{ name: "late_tool", defer_loading: true, strict: true },
 		]);
-		expect(findAnthropicToolResult(payload).content).toEqual([{ type: "tool_reference", tool_name: "late_tool" }]);
 	});
 
 	it("preserves tool output as sibling content after emitting references", async () => {
@@ -312,6 +321,17 @@ describe("deferred tools", () => {
 		expect(openAIToolNames(payload)).toEqual(["base_tool"]);
 		expect(searchCall).toMatchObject({ execution: "client", status: "completed" });
 		expect(searchOutput?.call_id).toBe(searchCall?.call_id);
+		expect(searchOutput?.tools).toMatchObject([{ type: "function", name: "late_tool", defer_loading: true }]);
+		expect(searchOutput?.tools?.every((tool) => tool.strict !== true)).toBe(true);
+	});
+
+	it("strictifies only opted-in deferred OpenAI Responses tools", async () => {
+		const context = makeContext([makeTool("base_tool"), makeTool("late_tool", { strict: true })]);
+		const payload = await capturePayload<OpenAIPayload>(getModel("openai", "gpt-5.4"), context);
+		const searchOutput = payload.input?.find(
+			(item): item is OpenAIToolSearchOutput => item.type === "tool_search_output",
+		);
+
 		expect(searchOutput?.tools).toMatchObject([
 			{ type: "function", name: "late_tool", defer_loading: true, strict: true },
 		]);
