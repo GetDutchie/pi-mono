@@ -1032,13 +1032,17 @@ function buildParams(
 				// Adaptive thinking: Claude decides when and how much to think.
 				params.thinking = { type: "adaptive", display };
 				if (options.effort) {
+					// MERGE into output_config: it may already carry the structured-output
+					// `format` (set from options.outputSchema above) — assigning a fresh
+					// object here silently dropped the schema, breaking native structured
+					// output whenever adaptive thinking was enabled.
 					// The Anthropic SDK types can lag newly supported effort values such as "xhigh".
 					params.output_config =
 						options.effort === "xhigh"
-							? ({ effort: options.effort } as unknown as NonNullable<
+							? ({ ...params.output_config, effort: options.effort } as unknown as NonNullable<
 									MessageCreateParamsStreaming["output_config"]
 								>)
-							: { effort: options.effort };
+							: { ...params.output_config, effort: options.effort };
 				}
 			} else {
 				// Budget-based thinking for older models
