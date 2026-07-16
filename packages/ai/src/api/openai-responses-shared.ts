@@ -309,30 +309,34 @@ export function convertResponsesMessages<TApi extends Api>(
 // =============================================================================
 
 export function convertResponsesTools(tools: readonly Tool[], options?: ConvertResponsesToolsOptions): OpenAITool[] {
-	// Default is strict: providers grammar-constrain arguments where the
-	// schema can be transformed into their strict subset. Deferred loading is
-	// orthogonal and must preserve the same strictness as immediate tools.
-	const strict = options?.strict === undefined ? true : options.strict;
-	if (strict !== true) {
-		return tools.map(
-			(tool): OpenAIFunctionTool => ({
+	// options.strict is the batch-level provider/env gate: true means the
+	// provider supports strict mode and PI_STRICT_TOOLS != "0"; false/null
+	// means the provider is unsupported or the kill switch is engaged. Each
+	// tool additionally opts in via `tool.strict === true`; ordinary tools
+	// are never strictified even when the gate is open. Deferred loading is
+	// orthogonal and must preserve the same per-tool decision as immediate
+	// tools.
+	// Fail closed when a future caller forgets to declare provider support.
+	const gate = options?.strict === undefined ? false : options.strict;
+	const nonStrictValue = gate === true ? false : gate;
+	return tools.map((tool): OpenAIFunctionTool => {
+		if (gate === true && tool.strict === true) {
+			const strictSchema = strictToolSchema(tool.parameters);
+			return {
 				type: "function",
 				name: tool.name,
 				description: tool.description,
-				parameters: tool.parameters as Record<string, unknown>,
-				strict,
+				parameters: (strictSchema ?? tool.parameters) as Record<string, unknown>,
+				strict: strictSchema !== null,
 				...(options?.deferLoading ? { defer_loading: true } : {}),
-			}),
-		);
-	}
-	return tools.map((tool): OpenAIFunctionTool => {
-		const strictSchema = strictToolSchema(tool.parameters);
+			};
+		}
 		return {
 			type: "function",
 			name: tool.name,
 			description: tool.description,
-			parameters: (strictSchema ?? tool.parameters) as Record<string, unknown>,
-			strict: strictSchema !== null,
+			parameters: tool.parameters as Record<string, unknown>,
+			strict: nonStrictValue,
 			...(options?.deferLoading ? { defer_loading: true } : {}),
 		};
 	});

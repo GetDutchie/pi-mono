@@ -425,7 +425,15 @@ export async function completeStructured<TParameters extends StructuredOutputSch
 		);
 	}
 
-	const outputTool: Tool = { name: toolName, description: toolDescription, parameters: parameters as TSchema };
+	const outputTool: Tool = {
+		name: toolName,
+		description: toolDescription,
+		parameters: parameters as TSchema,
+		// Preserve .6 structured-output behavior: this internal fallback tool
+		// opts into provider strictness. Provider capability, PI_STRICT_TOOLS=0,
+		// and the unstrictifiable-schema fallback remain authoritative gates.
+		strict: true,
+	};
 	const { toolName: _toolName, toolDescription: _toolDescription, ...providerOptions } = options;
 	const nativeStructured = usesNativeStructuredOutput(model);
 	if (model.api === "anthropic-messages") {

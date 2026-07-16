@@ -276,8 +276,9 @@ function buildParams(
 	}
 
 	if (context.tools && context.tools.length > 0) {
-		// Strict tool schemas by default; per-model compat opt-out plus a
-		// PI_STRICT_TOOLS=0 environment kill switch for emergency rollback.
+		// Strict tool schemas are opt-in per tool via `tool.strict === true`.
+		// Per-model compat opt-out plus a PI_STRICT_TOOLS=0 environment kill
+		// switch remain global gates for emergency rollback.
 		const strictEnabled =
 			model.compat?.supportsStrictMode !== false && getProviderEnvValue("PI_STRICT_TOOLS", options?.env) !== "0";
 		params.tools = convertResponsesTools(context.tools, { strict: strictEnabled === true });
