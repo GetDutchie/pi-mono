@@ -1617,13 +1617,18 @@ release. This is a **manual, local, non-committed** cut — there is no `scripts
 automation in this repo today. `scripts/publish.mjs` publishes the lockstep
 `@earendil-works/*` packages to public npm and is unrelated to this flow.
 
-**Registry auth** — `~/.npmrc` must contain (NEEDS-OPERATOR-CONFIRMATION: exact token
-scope/expiry and whether this should move to a repo-committed `.npmrc` + CI secret
-instead of a local file):
+**Registry auth** — VERIFIED 2026-07-16 (cutting dutchie.11): the plain
+`~/.npmrc` `//npm.pkg.github.com/:_authToken` is typically a READ-ONLY
+(`read:packages`) token — publishing with it fails `403 Forbidden ... token
+does not match expected scopes`. Use a token WITH `write:packages`. The
+`gh` CLI keyring token has it (`gh auth status` shows
+`write:packages`), so the reliable publish auth is to override with
+`gh auth token` at publish time (see the cut procedure below) rather than
+relying on the `.npmrc` token. `~/.npmrc` still needs the registry mapping:
 
 ```
 @getdutchie:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=<a GitHub PAT with read:packages + write:packages>
+//npm.pkg.github.com/:_authToken=<a GitHub PAT with read:packages (for install); publish uses gh auth token, see below>
 ```
 
 **Version history** — dutchie cuts are published as npm prereleases of the form
@@ -1667,7 +1672,14 @@ cd packages/ai
 npm pack --dry-run --ignore-scripts
 
 # 5. Publish the rescoped, bumped package to the GitHub Packages registry:
-npm publish --registry=https://npm.pkg.github.com
+npm publish --registry=https://npm.pkg.github.com --tag latest --ignore-scripts \
+  "--//npm.pkg.github.com/:_authToken=$(gh auth token)"
+# VERIFIED 2026-07-16 (dutchie.11):
+#  --tag latest     : prereleases (X-dutchie.N) REQUIRE an explicit --tag or npm
+#                     errors "must specify a tag"; prior cuts sit under `latest`.
+#  --ignore-scripts : publish the dist you built in step 1; skips prepublishOnly's
+#                     clean+rebuild (which would otherwise rebuild under the rescoped name).
+#  gh auth token    : supplies the write:packages token (the ~/.npmrc token is read-only).
 
 # 6. Discard the local rescope/bump — it must never land on main:
 cd ../.. && git checkout -- packages/ai/package.json
