@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { stream as rawStream } from "../src/api/anthropic-messages.ts";
 import { getModel, streamSimple } from "../src/compat.ts";
 import type { Context, Model, SimpleStreamOptions } from "../src/types.ts";
 
 interface AnthropicThinkingPayload {
 	thinking?: { type: string; budget_tokens?: number; display?: string };
-	output_config?: { effort?: string };
+	output_config?: { effort?: string; format?: { type: string; schema?: unknown } };
 }
 
 class PayloadCaptured extends Error {
@@ -98,6 +99,31 @@ describe("Anthropic forceAdaptiveThinking compat override", () => {
 
 		expect(payload.thinking?.type).toBe("enabled");
 		expect(payload.output_config).toBeUndefined();
+	});
+
+	it("merges adaptive effort into output_config without dropping a structured-output format", async () => {
+		// completeStructured -> complete -> raw stream() with AnthropicOptions:
+		// outputSchema sets output_config.format, adaptive thinking sets effort.
+		// Regression: the effort assignment used to REPLACE output_config,
+		// silently discarding the json_schema format.
+		let capturedPayload: AnthropicThinkingPayload | undefined;
+		const s = rawStream(makeCustomModel({ forceAdaptiveThinking: true }), makeContext(), {
+			apiKey: "fake-key",
+			thinkingEnabled: true,
+			effort: "medium",
+			outputSchema: {
+				schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+			},
+			onPayload: (payload) => {
+				capturedPayload = payload as AnthropicThinkingPayload;
+				throw new PayloadCaptured();
+			},
+		});
+		await s.result();
+
+		expect(capturedPayload?.thinking).toEqual({ type: "adaptive", display: "summarized" });
+		expect(capturedPayload?.output_config?.effort).toBe("medium");
+		expect(capturedPayload?.output_config?.format?.type).toBe("json_schema");
 	});
 
 	it("preserves thinking.type=disabled when reasoning is off regardless of override", async () => {
