@@ -431,6 +431,17 @@ Thrown errors are caught by the agent and reported to the LLM as tool errors wit
 
 Return `terminate: true` from `execute()` or `afterToolCall` to hint that the agent should stop after the current tool batch. This only takes effect when every finalized tool result in the batch is terminating. The hint is runtime-only; emitted `toolResult` transcript messages remain standard LLM tool results.
 
+### Agent Tools vs. Structured Output
+
+Agent tools are action-oriented: put `AgentTool`s in `agent.state.tools`, let the agent execute them, and feed their results back through the normal multi-turn tool loop. This is the correct contract for URA and other Pi agents.
+
+`completeStructured()` from `@earendil-works/pi-ai/compat` is different: it is an application-level, one-shot output contract for a typed decision or record. It reserves the only tool slot for a private schema-constrained result and therefore **must not** be used inside an `Agent` run that has business tools. It is additive; it does not change any agent API, `Context.tools`, or `complete()`/`stream()` signatures.
+
+| Need | Use | Do not use |
+|---|---|---|
+| An agent reads files, calls services, and continues after results | `AgentTool` / `Context.tools` | `completeStructured()` |
+| A pipeline needs one typed verdict, proposal, or mutation payload | `completeStructured()` plus application validation | Prompted JSON text + regex or `JSON.parse()` |
+
 ## Proxy Usage
 
 For browser apps that proxy through a backend:

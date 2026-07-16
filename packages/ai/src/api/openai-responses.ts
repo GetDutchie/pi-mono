@@ -15,6 +15,7 @@ import type {
 	StreamOptions,
 	Usage,
 } from "../types.ts";
+import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
@@ -63,6 +64,7 @@ function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCo
 		supportsStrictMode: model.compat?.supportsStrictMode ?? true,
 		sendSessionIdHeader: model.compat?.sendSessionIdHeader ?? true,
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
+		supportsToolSearch: model.compat?.supportsToolSearch ?? false,
 	};
 }
 
@@ -82,6 +84,8 @@ export interface OpenAIResponsesOptions extends StreamOptions {
 	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	reasoningSummary?: "auto" | "detailed" | "concise" | null;
 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
+	/** Force or constrain Responses API function selection. */
+	toolChoice?: ResponseCreateParamsStreaming["tool_choice"];
 }
 
 /**
@@ -221,10 +225,15 @@ function createClient(
 }
 
 function buildParams(model: Model<"openai-responses">, context: Context, options?: OpenAIResponsesOptions) {
-	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS);
+	const compat = getCompat(model);
+	const strictEnabled = compat.supportsStrictMode && getProviderEnvValue("PI_STRICT_TOOLS", options?.env) !== "0";
+	const toolPlacement = splitDeferredTools(context, compat.supportsToolSearch);
+	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
+		deferredTools: toolPlacement.deferred,
+		strict: strictEnabled,
+	});
 
 	const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
-	const compat = getCompat(model);
 	const params: ResponseCreateParamsStreaming = {
 		model: model.id,
 		input: messages,
@@ -246,11 +255,11 @@ function buildParams(model: Model<"openai-responses">, context: Context, options
 		params.service_tier = options.serviceTier;
 	}
 
-	if (context.tools && context.tools.length > 0) {
-		// Strict tool schemas by default; per-model compat opt-out plus a
-		// PI_STRICT_TOOLS=0 environment kill switch for emergency rollback.
-		const strictEnabled = compat.supportsStrictMode && getProviderEnvValue("PI_STRICT_TOOLS", options?.env) !== "0";
-		params.tools = convertResponsesTools(context.tools, { strict: strictEnabled === true });
+	if (toolPlacement.immediate.length > 0) {
+		params.tools = convertResponsesTools(toolPlacement.immediate, { strict: strictEnabled });
+		if (options?.toolChoice !== undefined) {
+			params.tool_choice = options.toolChoice;
+		}
 	}
 
 	if (model.reasoning) {
