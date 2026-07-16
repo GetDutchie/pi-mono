@@ -58,6 +58,10 @@ npm run check        # Lint, format, and type check
 ./pi-test.sh         # Run pi from sources (can be run from any directory)
 ```
 
+For the GetDutchie fork's private registry publish flow (rescoped `@getdutchie/pi-ai`
+cuts), see ["Publishing a @getdutchie/pi-ai dutchie cut"](packages/ai/README.md#publishing-a-getdutchiepi-ai-dutchie-cut)
+in `packages/ai/README.md`.
+
 ## Supply-chain hardening
 
 We treat npm dependency changes as reviewed code changes.

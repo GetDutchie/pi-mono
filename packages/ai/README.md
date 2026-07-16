@@ -1608,6 +1608,88 @@ Add an entry to `packages/ai/CHANGELOG.md` under `## [Unreleased]`:
 - Added support for [Provider Name] provider ([#PR](link) by [@author](link))
 ```
 
+## Publishing a @getdutchie/pi-ai dutchie cut
+
+The GetDutchie fork (`GetDutchie/pi-mono`) periodically publishes a private, rescoped
+build of this package to the GitHub Packages registry so downstream Dutchie apps can
+consume in-flight fixes before they land in the upstream `@earendil-works/pi-ai` npm
+release. This is a **manual, local, non-committed** cut — there is no `scripts/dutchie-*`
+automation in this repo today. `scripts/publish.mjs` publishes the lockstep
+`@earendil-works/*` packages to public npm and is unrelated to this flow.
+
+**Registry auth** — `~/.npmrc` must contain (NEEDS-OPERATOR-CONFIRMATION: exact token
+scope/expiry and whether this should move to a repo-committed `.npmrc` + CI secret
+instead of a local file):
+
+```
+@getdutchie:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=<a GitHub PAT with read:packages + write:packages>
+```
+
+**Version history** — dutchie cuts are published as npm prereleases of the form
+`<upstream-version>-dutchie.<N>`, sequential per upstream version. As of this writing:
+
+```bash
+npm view @getdutchie/pi-ai versions --registry=https://npm.pkg.github.com
+# [ '0.80.3-dutchie.1', '0.80.6-dutchie.1', ..., '0.80.6-dutchie.9', '0.80.6-dutchie.10' ]
+```
+
+`dutchie.8` is missing from the published history (a skipped/failed publish attempt) —
+treat gaps as normal, not as a sign something is broken. Always check the current max `N`
+for the upstream version you're cutting before picking the next one; **never reuse a
+version string** (npm publish will reject it, and reusing after an `npm unpublish` window
+is unsafe).
+
+**Cut procedure** (from a clean `main` checkout, after merging the fixes you want in the
+cut):
+
+```bash
+# 1. Build the real package first — the cut publishes packages/ai/dist, and package.json
+#    exports point at it. NEVER hand-publish a stale/missing dist.
+npm run build
+
+# 2. Confirm the require condition is present on every exports subpath (regression guard
+#    that motivated packages/ai/test/exports-require-condition.test.ts — dutchie.9 had it
+#    on ./compat only, dutchie.10 dropped it repo-wide).
+cd packages/ai && npx vitest run test/exports-require-condition.test.ts && cd ../..
+
+# 3. Locally rescope + version-bump packages/ai/package.json for the cut only.
+#    Do NOT commit this edit — it's a local, throwaway publish-time mutation:
+#      "name": "@earendil-works/pi-ai"  ->  "name": "@getdutchie/pi-ai"
+#      "version": "0.80.6"              ->  "version": "0.80.6-dutchie.11"   (bump N)
+#    (NEEDS-OPERATOR-CONFIRMATION: whether workspace-internal deps on
+#    "@earendil-works/pi-ai" elsewhere in the monorepo need a matching temporary
+#    rescope/bump for `npm run build` to still resolve them during this step, or
+#    whether packages/ai builds standalone enough that this is a no-op.)
+
+# 4. Dry-run the pack to sanity-check contents before publishing for real:
+cd packages/ai
+npm pack --dry-run --ignore-scripts
+
+# 5. Publish the rescoped, bumped package to the GitHub Packages registry:
+npm publish --registry=https://npm.pkg.github.com
+
+# 6. Discard the local rescope/bump — it must never land on main:
+cd ../.. && git checkout -- packages/ai/package.json
+git status --short   # must be clean before you walk away
+```
+
+**Verifying the cut** (from a downstream consumer, or a scratch directory):
+
+```bash
+npm view @getdutchie/pi-ai@0.80.6-dutchie.11 --registry=https://npm.pkg.github.com
+```
+
+NEEDS-OPERATOR-CONFIRMATION items still open:
+- Whether there's an intended CI job for this flow (a GitHub Actions workflow that
+  rescopes/bumps/publishes on a tag or manual dispatch) versus the fully manual flow
+  documented above — no such workflow exists in `.github/workflows/` as of this PR.
+- The exact policy for which upstream version a new dutchie cut should be based on when
+  `main` has moved past the last tagged `v0.80.6`-style release (cut from `main` HEAD, or
+  from a dedicated `dutchie-x.y.z` release branch like the one merged into `main` in this
+  consolidation?).
+- Token rotation/expiry policy for the `npm.pkg.github.com` PAT referenced above.
+
 ## License
 
 MIT
