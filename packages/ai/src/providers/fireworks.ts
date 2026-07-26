@@ -1,4 +1,5 @@
 import { anthropicMessagesApi } from "../api/anthropic-messages.lazy.ts";
+import { anthropicBatchApi, openaiBatchApi } from "../api/batch/lazy.ts";
 import { openAICompletionsApi } from "../api/openai-completions.lazy.ts";
 import { envApiKeyAuth } from "../auth/helpers.ts";
 import { createProvider, type Provider } from "../models.ts";
@@ -14,6 +15,10 @@ export function fireworksProvider(): Provider<"anthropic-messages" | "openai-com
 		api: {
 			"anthropic-messages": anthropicMessagesApi(),
 			"openai-completions": openAICompletionsApi(),
+		},
+		batch: {
+			"anthropic-messages": anthropicBatchApi(),
+			"openai-completions": openaiBatchApi(),
 		},
 	});
 }

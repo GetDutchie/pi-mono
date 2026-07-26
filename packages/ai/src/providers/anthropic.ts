@@ -1,4 +1,5 @@
 import { anthropicMessagesApi } from "../api/anthropic-messages.lazy.ts";
+import { anthropicBatchApi } from "../api/batch/lazy.ts";
 import { lazyOAuth } from "../auth/helpers.ts";
 import { loadAnthropicOAuth } from "../auth/oauth/load.ts";
 import type { ApiKeyAuth } from "../auth/types.ts";
@@ -46,5 +47,6 @@ export function anthropicProvider(): Provider<"anthropic-messages"> {
 		},
 		models: Object.values(ANTHROPIC_MODELS),
 		api: anthropicMessagesApi(),
+		batch: anthropicBatchApi(),
 	});
 }

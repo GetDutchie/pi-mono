@@ -2,6 +2,7 @@ import { piMessagesApi } from "../api/pi-messages.lazy.ts";
 import { envApiKeyAuth, lazyOAuth } from "../auth/helpers.ts";
 import { loadRadiusOAuth } from "../auth/oauth/load.ts";
 import type { Provider } from "../models.ts";
+import { NotBatchableError } from "../types.ts";
 import {
 	DEFAULT_RADIUS_GATEWAY,
 	getRadiusModels,
@@ -63,5 +64,11 @@ export function radiusProvider(options: RadiusProviderOptions = {}): Provider<"p
 		},
 		stream: (model, context, streamOptions) => streams.stream(model, context, streamOptions),
 		streamSimple: (model, context, streamOptions) => streams.streamSimple(model, context, streamOptions),
+		// Radius is a realtime gateway with no batch surface. Fail loudly rather
+		// than fan the work out as realtime calls at full price.
+		canBatch: () => false,
+		submitBatch: (model) => Promise.reject(new NotBatchableError(id, model.id)),
+		pollBatch: (model) => Promise.reject(new NotBatchableError(id, model.id)),
+		submitAndAwaitBatch: (model) => Promise.reject(new NotBatchableError(id, model.id)),
 	};
 }

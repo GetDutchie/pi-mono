@@ -245,6 +245,149 @@ export interface ProviderImages {
 	): Promise<AssistantImages>;
 }
 
+// =============================================================================
+// Batch
+// =============================================================================
+
+/**
+ * One request in a batch job. Deliberately carries a full `Context` rather
+ * than a flattened prompt/system pair: a batch item is the same shape as a
+ * realtime call, so callers can move work between the two without rewriting
+ * it.
+ */
+export interface BatchItem {
+	/**
+	 * Caller-chosen correlation id, unique within the job. Providers spell this
+	 * differently on the wire (`custom_id` on Anthropic and OpenAI, `key` on
+	 * Gemini); transports map it. Provider-specific charset/length limits are
+	 * validated per transport, not globally.
+	 */
+	customId: string;
+	context: Context;
+	/**
+	 * JSON Schema for constrained output. Transports translate it to the
+	 * provider's native structured-output surface and, where the provider needs
+	 * a strict subset to actually logit-mask, run the same schema transform the
+	 * realtime path uses. Absent means unconstrained text.
+	 */
+	outputSchema?: Record<string, unknown>;
+	maxTokens?: number;
+	reasoning?: ThinkingLevel;
+}
+
+/** Why a batch item failed. Distinguishes provider/protocol faults from
+ * content faults so callers can retry the right ones. */
+export type BatchErrorKind =
+	/** The job was rejected before it ran (validation, HTTP error on submit). */
+	| "submit"
+	/** The provider reported a per-item failure inside a job that otherwise ran. */
+	| "provider_item"
+	/** Generation hit the token ceiling; structured output is truncated and unparseable. */
+	| "truncated"
+	/** Output was returned but did not parse against `outputSchema`. */
+	| "parse"
+	/** Two items in the same job shared a customId (caught locally before submit). */
+	| "duplicate_custom_id";
+
+export interface BatchResult {
+	customId: string;
+	ok: boolean;
+	/** Raw model text. Present on success. */
+	text?: string;
+	/** Parsed output when the item declared an `outputSchema`. */
+	value?: unknown;
+	/** Per-item usage when the provider reports it. */
+	usage?: Usage;
+	error?: string;
+	errorKind?: BatchErrorKind;
+}
+
+export interface BatchSubmitHooks {
+	/**
+	 * Fired once the provider has ACCEPTED the job and issued an id, before any
+	 * polling. Persist this id if you need to resume after a crash — a job keeps
+	 * running provider-side whether or not anyone is listening.
+	 *
+	 * A batch id is only ever a real provider-side job id. Transports never
+	 * synthesise one.
+	 */
+	onSubmitted?: (batchId: string) => void | Promise<void>;
+}
+
+export interface BatchOptions {
+	signal?: AbortSignal;
+	apiKey?: string;
+	env?: ProviderEnv;
+	headers?: ProviderHeaders;
+	/** Poll cadence while awaiting completion. Default 60s. */
+	pollIntervalMs?: number;
+	/** Give up after this many polls. Default 1440 (24h at the default cadence). */
+	maxPolls?: number;
+	/** Inspect or replace the provider payload before submit. */
+	onPayload?: (payload: unknown, model: Model<Api>) => unknown | undefined | Promise<unknown | undefined>;
+}
+
+/**
+ * Thrown when batch work is requested for a model whose provider has no batch
+ * transport, or whose batch surface is unreachable.
+ *
+ * Batch is a PRICING decision — roughly half the realtime rate. Silently
+ * running the work as individual realtime calls would bill the caller full
+ * freight while returning shape-identical results, so it is undetectable
+ * without reconciling an invoice. Batch therefore fails loudly and never
+ * degrades. A caller that wants realtime chooses realtime explicitly.
+ */
+export class NotBatchableError extends Error {
+	readonly provider: string;
+	readonly model: string;
+	constructor(provider: string, model: string, detail?: string) {
+		super(
+			`NOT_BATCHABLE: provider "${provider}" has no batch transport for model "${model}"${
+				detail ? ` (${detail})` : ""
+			}. Batch pricing cannot be emulated — run these requests as ordinary realtime calls if that is acceptable.`,
+		);
+		this.name = "NotBatchableError";
+		this.provider = provider;
+		this.model = model;
+	}
+}
+
+/**
+ * The uniform contract of a batch API implementation module, mirroring
+ * `ProviderStreams` / `ProviderImages`. Optional on a provider: absent means
+ * the provider genuinely cannot batch, and callers get `NotBatchableError`.
+ */
+export interface ProviderBatch {
+	/**
+	 * Upload the job and return as soon as the provider accepts it. Pair with
+	 * `pollBatch` to drain. Lets a caller bound concurrent uploads separately
+	 * from provider-side processing, which is unbounded.
+	 */
+	submitBatch(model: Model<Api>, items: readonly BatchItem[], options?: BatchOptions): Promise<{ batchId: string }>;
+	/**
+	 * Re-attach to an already-submitted job and drain it. `items` supplies the
+	 * customId -> outputSchema mapping needed to parse results; nothing is
+	 * re-sent.
+	 */
+	pollBatch(
+		model: Model<Api>,
+		batchId: string,
+		items: readonly BatchItem[],
+		options?: BatchOptions,
+	): Promise<BatchResult[]>;
+	/**
+	 * Submit, poll to completion, and map results back by customId. A per-item
+	 * failure is reported as `{ ok: false }` for that customId only and is never
+	 * fatal to the rest of the job.
+	 */
+	submitAndAwait(
+		model: Model<Api>,
+		items: readonly BatchItem[],
+		options?: BatchOptions,
+		hooks?: BatchSubmitHooks,
+	): Promise<BatchResult[]>;
+}
+
 export interface ImagesOptions {
 	signal?: AbortSignal;
 	apiKey?: string;

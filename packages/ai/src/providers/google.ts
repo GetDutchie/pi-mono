@@ -1,3 +1,4 @@
+import { googleBatchApi } from "../api/batch/lazy.ts";
 import { googleGenerativeAIApi } from "../api/google-generative-ai.lazy.ts";
 import { envApiKeyAuth } from "../auth/helpers.ts";
 import { createProvider, type Provider } from "../models.ts";
@@ -11,5 +12,6 @@ export function googleProvider(): Provider<"google-generative-ai"> {
 		auth: { apiKey: envApiKeyAuth("Gemini API key", ["GEMINI_API_KEY"]) },
 		models: Object.values(GOOGLE_MODELS),
 		api: googleGenerativeAIApi(),
+		batch: googleBatchApi(),
 	});
 }

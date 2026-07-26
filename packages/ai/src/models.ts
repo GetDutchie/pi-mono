@@ -18,16 +18,22 @@ import type {
 	ApiStreamOptions,
 	AssistantMessage,
 	AssistantMessageEventStream,
+	BatchItem,
+	BatchOptions,
+	BatchResult,
+	BatchSubmitHooks,
 	Context,
 	Model,
 	ModelCostRates,
 	ModelThinkingLevel,
+	ProviderBatch,
 	ProviderHeaders,
 	ProviderStreams,
 	SimpleStreamOptions,
 	StreamOptions,
 	Usage,
 } from "./types.ts";
+import { NotBatchableError } from "./types.ts";
 
 export { ModelsError, type ModelsErrorCode } from "./auth/resolve.ts";
 
@@ -117,6 +123,31 @@ export interface Provider<TApi extends Api = Api> {
 	): AssistantMessageEventStream;
 
 	streamSimple(model: Model<TApi>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream;
+
+	/**
+	 * Asynchronous batch execution, ~50% of realtime pricing.
+	 *
+	 * Providers without a batch transport reject with `NotBatchableError`. Batch
+	 * is a PRICING decision, so it is never emulated by fanning the work out as
+	 * realtime calls — that would bill the caller full freight while returning
+	 * shape-identical results, undetectable short of reconciling an invoice.
+	 * A caller who wants realtime asks for realtime.
+	 */
+	submitBatch(model: Model<TApi>, items: readonly BatchItem[], options?: BatchOptions): Promise<{ batchId: string }>;
+	pollBatch(
+		model: Model<TApi>,
+		batchId: string,
+		items: readonly BatchItem[],
+		options?: BatchOptions,
+	): Promise<BatchResult[]>;
+	submitAndAwaitBatch(
+		model: Model<TApi>,
+		items: readonly BatchItem[],
+		options?: BatchOptions,
+		hooks?: BatchSubmitHooks,
+	): Promise<BatchResult[]>;
+	/** Whether this provider can batch the given model at all. */
+	canBatch(model: Model<TApi>): boolean;
 }
 
 /**
@@ -545,6 +576,12 @@ export interface CreateProviderOptions<TApi extends Api = Api> {
 	filterModels?: (models: readonly Model<TApi>[], credential: Credential | undefined) => readonly Model<TApi>[];
 	/** Single implementation, or map keyed by `model.api` for mixed-API providers. */
 	api: ProviderStreams | Partial<Record<TApi, ProviderStreams>>;
+	/**
+	 * Optional batch implementation, single or keyed by `model.api`. Omit when
+	 * the provider genuinely has no batch surface — callers then get a loud
+	 * `NotBatchableError` rather than silent realtime fallback.
+	 */
+	batch?: ProviderBatch | Partial<Record<TApi, ProviderBatch>>;
 }
 
 /**
@@ -572,6 +609,37 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 	const byApi = single ? undefined : (input.api as Partial<Record<string, ProviderStreams>>);
 
 	const apiFor = (model: Model<Api>): ProviderStreams | undefined => single ?? byApi?.[model.api];
+
+	// Batch capability resolves the same way as streams: one implementation, or
+	// a map keyed by `model.api` for mixed-API providers (Fireworks serves both
+	// anthropic-messages and openai-completions, for instance).
+	const singleBatch =
+		input.batch && typeof (input.batch as ProviderBatch).submitBatch === "function"
+			? (input.batch as ProviderBatch)
+			: undefined;
+	const batchByApi = singleBatch ? undefined : (input.batch as Partial<Record<string, ProviderBatch>> | undefined);
+	const batchFor = (model: Model<Api>): ProviderBatch | undefined => singleBatch ?? batchByApi?.[model.api];
+
+	/**
+	 * Fail loudly rather than degrade. Batch pricing cannot be emulated, so a
+	 * provider without a transport must refuse the work instead of quietly
+	 * running it at realtime rates.
+	 *
+	 * REJECTS rather than throwing synchronously: these methods are declared to
+	 * return a Promise, so a caller using `.catch()` (instead of await inside
+	 * try/catch) would otherwise take an uncaught synchronous throw.
+	 */
+	const withBatch = <T>(model: Model<Api>, run: (impl: ProviderBatch) => Promise<T>): Promise<T> => {
+		const impl = batchFor(model);
+		if (!impl) {
+			return Promise.reject(new NotBatchableError(input.id, model.id, `no batch transport for api "${model.api}"`));
+		}
+		try {
+			return run(impl);
+		} catch (err) {
+			return Promise.reject(err);
+		}
+	};
 
 	const dispatch = (
 		model: Model<Api>,
@@ -619,6 +687,12 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 		stream: (model, context, options) => dispatch(model, (streams) => streams.stream(model, context, options)),
 		streamSimple: (model, context, options) =>
 			dispatch(model, (streams) => streams.streamSimple(model, context, options)),
+		canBatch: (model) => batchFor(model) !== undefined,
+		submitBatch: (model, items, options) => withBatch(model, (impl) => impl.submitBatch(model, items, options)),
+		pollBatch: (model, batchId, items, options) =>
+			withBatch(model, (impl) => impl.pollBatch(model, batchId, items, options)),
+		submitAndAwaitBatch: (model, items, options, hooks) =>
+			withBatch(model, (impl) => impl.submitAndAwait(model, items, options, hooks)),
 	};
 }
 

@@ -8,6 +8,7 @@ export { Type } from "typebox";
 // "@earendil-works/pi-ai/compat".
 export type { AnthropicEffort, AnthropicOptions, AnthropicThinkingDisplay } from "./api/anthropic-messages.ts";
 export type { AzureOpenAIResponsesOptions } from "./api/azure-openai-responses.ts";
+export * from "./api/batch/lazy.ts";
 export type { BedrockOptions, BedrockThinkingDisplay } from "./api/bedrock-converse-stream.ts";
 export type { GoogleOptions } from "./api/google-generative-ai.ts";
 export type { GoogleThinkingLevel } from "./api/google-shared.ts";
