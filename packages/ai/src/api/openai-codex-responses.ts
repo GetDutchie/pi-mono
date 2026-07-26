@@ -90,7 +90,6 @@ export interface OpenAICodexResponsesOptions extends StreamOptions {
 	/** Force or constrain Responses API function selection. */
 	toolChoice?: ResponseCreateParamsStreaming["tool_choice"];
 	textVerbosity?: "low" | "medium" | "high";
-	toolChoice?: "auto" | "none" | "required";
 }
 
 type CodexResponseStatus = "completed" | "incomplete" | "failed" | "cancelled" | "queued" | "in_progress";

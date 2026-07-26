@@ -452,7 +452,19 @@ export async function completeStructured<TParameters extends StructuredOutputSch
 		// Preserve .6 structured-output behavior: this internal fallback tool
 		// opts into provider strictness. Provider capability, PI_STRICT_TOOLS=0,
 		// and the unstrictifiable-schema fallback remain authoritative gates.
-		strict: true,
+		//
+		// 0.82.1 merge: the fork's per-tool `strict: true` became upstream's
+		// `constrainedSampling`. "prefer" (not "require") is deliberate — this is
+		// a FALLBACK tool with a validate-and-retry backstop, so losing provider
+		// strictness must degrade, never throw. `"require"` throws outright when
+		// the provider lacks strict mode (see resolveJsonSchemaStrictSampling).
+		//
+		// KNOWN GAP: "prefer" degrades SILENTLY. Operator rule is loud-but-
+		// non-fatal for strict (fatal is reserved for batch, which has no
+		// backstop). Upstream offers no such mode; the fix is a diagnostic on the
+		// prefer-fallback path via AssistantMessage.diagnostics. See
+		// docs/dutchie-fork-reconciliation.md §4.
+		constrainedSampling: { type: "json_schema", strict: "prefer" },
 	};
 	const { toolName: _toolName, toolDescription: _toolDescription, ...providerOptions } = options;
 	const nativeStructured = usesNativeStructuredOutput(model);

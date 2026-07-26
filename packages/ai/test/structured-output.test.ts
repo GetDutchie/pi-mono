@@ -252,8 +252,62 @@ describe("completeStructured", () => {
 			),
 		).rejects.toThrow("stop after payload capture");
 
+		// 0.82.1 merge: `strict` is now PROVIDER-GATED, not forced by this helper.
+		// Upstream's openai-responses compat defaults `supportsStrictMode` to false
+		// ("Defaults are API-specific; generated OpenAI models enable it
+		// explicitly" — types.ts), so a synthetic model with no compat gets an
+		// unstrict tool. Real catalog models (openai, azure) enable it, so
+		// production behaviour is unchanged. The output tool is still FORCED via
+		// tool_choice regardless — that is what this test exists to pin.
 		expect(payload).toMatchObject({
 			tool_choice: { type: "function", name: "submit_structured_output" },
+			tools: [
+				{
+					type: "function",
+					name: "submit_structured_output",
+				},
+			],
+		});
+		expect((payload as { tools: { strict?: unknown }[] }).tools[0].strict).toBeUndefined();
+	});
+
+	it("applies strict to the output tool when the provider declares support", async () => {
+		const model: Model<"openai-responses"> = {
+			id: "test-model",
+			name: "Test model",
+			api: "openai-responses",
+			provider: "test-provider",
+			baseUrl: "https://example.invalid/v1",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1_000,
+			maxTokens: 100,
+			compat: { supportsStrictMode: true },
+		};
+		let payload: unknown;
+
+		await expect(
+			completeStructured(
+				model,
+				{ messages: [{ role: "user", content: "Return a result", timestamp: Date.now() }] },
+				resultSchema,
+				{
+					apiKey: "test-key",
+					onPayload: (nextPayload) => {
+						payload = nextPayload;
+						throw new Error("stop after payload capture");
+					},
+				},
+			),
+		).rejects.toThrow("stop after payload capture");
+
+		// completeStructured requests `constrainedSampling: { type: "json_schema",
+		// strict: "prefer" }` on its internal output tool (compat.ts). "prefer"
+		// rather than "require" because this is a fallback path with a
+		// validate-and-retry backstop — losing provider strictness must degrade,
+		// never throw.
+		expect(payload).toMatchObject({
 			tools: [
 				{
 					type: "function",
