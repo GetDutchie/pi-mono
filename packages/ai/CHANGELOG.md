@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `ProviderBatch`, a third optional per-provider capability module alongside `ProviderStreams` and `ProviderImages`, with transports for Anthropic Message Batches, the OpenAI-compatible `/v1/files` + `/v1/batches` surface (also serving Azure and Fireworks), and Gemini Batch Mode. Surfaced on `Provider` as `submitBatch` / `pollBatch` / `submitAndAwaitBatch`, with `canBatch(model)` as the capability probe. Structured output is honoured on every transport, translated to each provider's native constrained-decoding surface.
+
+### Changed
+
+- Requesting batch execution from a provider with no batch transport now rejects with `NotBatchableError`. Batch is a pricing decision, so it is never emulated by running the items as individual realtime calls, and a batch id is always a real provider-side job id.
+
 ## [0.82.1] - 2026-07-25
 
 ### Added

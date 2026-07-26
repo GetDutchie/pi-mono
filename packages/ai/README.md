@@ -27,6 +27,11 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
   - [Streaming Tool Calls with Partial JSON](#streaming-tool-calls-with-partial-json)
   - [Validating Tool Arguments](#validating-tool-arguments)
   - [Complete Event Reference](#complete-event-reference)
+- [Batch](#batch)
+  - [Submitting a Batch](#submitting-a-batch)
+  - [Resuming a Batch](#resuming-a-batch)
+  - [Batch Is Never Emulated](#batch-is-never-emulated)
+  - [Provider Support](#batch-provider-support)
 - [Image Input](#image-input)
 - [Image Generation](#image-generation)
 - [Thinking/Reasoning](#thinkingreasoning)
@@ -705,6 +710,122 @@ All streaming events emitted during assistant message generation:
 | `error` | Error occurred | `reason`: Error type ("error" or "aborted"), `error`: AssistantMessage with partial content |
 
 Streaming events for different content blocks are not guaranteed to be contiguous. Providers may emit deltas for text, thinking, and tool calls in the same upstream chunk, and pi may surface corresponding events interleaved, for example `text_start`, `text_delta`, `toolcall_start`, `text_delta`, `toolcall_delta`. Consumers must use `contentIndex` to associate each delta/end event with its block and must not assume that a block's `*_start`/`*_delta`/`*_end` sequence is uninterrupted by events for other blocks.
+
+## Batch
+
+Batch APIs run requests asynchronously for roughly **half the realtime price**,
+with a 24-hour completion window. Use them when latency does not matter and
+volume does.
+
+### Submitting a Batch
+
+A `BatchItem` carries a full `Context`, so a batch item is the same shape as a
+realtime call — you can move work between the two without rewriting it.
+
+```typescript
+const model = models.getModel("anthropic", "claude-sonnet-5")!;
+
+const results = await provider.submitAndAwaitBatch(model, [
+  {
+    customId: "review-1",
+    context: {
+      systemPrompt: "You are a terse code reviewer.",
+      messages: [{ role: "user", content: "Review this diff…", timestamp: Date.now() }],
+    },
+    outputSchema: {
+      type: "object",
+      properties: { verdict: { type: "string" }, detail: { type: "string" } },
+      required: ["verdict"],
+    },
+  },
+  // …thousands more
+]);
+
+for (const r of results) {
+  if (r.ok) console.log(r.customId, r.value); // parsed against outputSchema
+  else console.error(r.customId, r.errorKind, r.error);
+}
+```
+
+`customId` is your correlation key. Providers spell it differently on the wire
+(`custom_id` on Anthropic and OpenAI, request metadata on Gemini); the transport
+maps it. Results always come back in the order you supplied the items.
+
+A per-item failure is never fatal to the rest of the job. `errorKind`
+distinguishes the causes so you can retry the right ones:
+
+| `errorKind` | Meaning |
+| --- | --- |
+| `submit` | Job rejected before it ran |
+| `provider_item` | Provider reported a failure for this item |
+| `truncated` | Generation hit the token ceiling; output is incomplete |
+| `parse` | Output returned but did not parse against `outputSchema` |
+| `duplicate_custom_id` | Two items shared a `customId` (caught locally before submit) |
+
+A duplicate `customId` is rejected locally rather than sent, because providers
+reject the **entire job** over it — taking down every healthy request with no
+per-item attribution.
+
+### Resuming a Batch
+
+A submitted job keeps running provider-side whether or not anyone is listening.
+Capture the id and reattach later:
+
+```typescript
+const { batchId } = await provider.submitBatch(model, items);
+await db.save(batchId);              // survive a crash
+
+// later, possibly in another process
+const results = await provider.pollBatch(model, batchId, items);
+```
+
+`submitAndAwaitBatch` accepts an `onSubmitted` hook for the same purpose:
+
+```typescript
+await provider.submitAndAwaitBatch(model, items, {}, {
+  onSubmitted: (batchId) => db.save(batchId),
+});
+```
+
+Polling defaults to every 60s for up to 24 hours; override with
+`pollIntervalMs` / `maxPolls`. Pass a `signal` to abort a wait — note this stops
+*waiting*, it does not cancel the provider-side job.
+
+### Batch Is Never Emulated
+
+Requesting batch from a provider that has no batch transport rejects with
+`NotBatchableError`. There is deliberately **no** fallback that runs the items as
+individual realtime calls.
+
+Batch is a pricing decision. Emulating it would bill full realtime rates while
+returning shape-identical results — undetectable short of reconciling an
+invoice. If realtime is acceptable for your workload, ask for realtime
+explicitly.
+
+For the same reason a batch id is always a real provider-side job id; the
+library never synthesises one.
+
+```typescript
+if (!provider.canBatch(model)) {
+  // decide explicitly: run realtime, or pick a batchable model
+}
+```
+
+### Batch Provider Support
+
+| Provider / API | Batch | Notes |
+| --- | --- | --- |
+| `anthropic` (`anthropic-messages`) | ✅ | Message Batches |
+| `openai` (`openai-completions`) | ✅ | `/v1/files` + `/v1/batches` |
+| `azure-openai-responses` | ✅ | OpenAI-compatible batch |
+| `fireworks` | ✅ | Both of its wire APIs |
+| `google` (`google-generative-ai`) | ✅ | Gemini Batch Mode, inline requests (20MB cap) |
+| `google-vertex` | ❌ | GCS-in/GCS-out; not implemented |
+| `bedrock`, `mistral`, `radius` | ❌ | No batch surface wired |
+
+Structured output is honoured on every batch transport, translated to each
+provider's native constrained-decoding surface — so batch results are schema-
+constrained exactly as realtime ones are.
 
 ## Image Input
 

@@ -110,7 +110,13 @@ candidates** — if they land, the fork shrinks to the structured-output line.
 
 ---
 
-## 3. Batch support — new work
+## 3. Batch support — BUILT (`2885192b1`)
+
+> **Status:** implemented on this branch. `ProviderBatch` ships with three
+> transports; the analysis below is retained because it is the rationale.
+> Re-verified after the merge: upstream 0.82.1 added **no** batch support
+> (zero batch commits in the 195, one incidental occurrence of the word in
+> `packages/ai/src`).
 
 `grep -c batch` across all of pi-ai `dist`: **1**. There is no batch API.
 
@@ -125,34 +131,81 @@ hand-maintains a regex→price table that duplicates pi-ai's generated
 The file is remarkably portable: its only imports are `node:crypto`, `zod`, and
 `./llm`. No db, no temporal, no fs.
 
-### Proposed surface
+### Shipped surface
 
-pi-ai already has the seam — `ProviderStreams { stream, streamSimple }` and
+pi-ai already had the seam — `ProviderStreams { stream, streamSimple }` and
 `ProviderImages { generateImages }` are optional per-provider capability
-modules. Batch slots in the same way:
+modules. Batch slots in the same way, resolved identically (single
+implementation, or a map keyed by `model.api` for mixed-API providers):
 
 ```ts
 export interface ProviderBatch {
-  submitBatch(model, items, options?): Promise<{ batchId } | { failures }>;
+  submitBatch(model, items, options?): Promise<{ batchId: string }>;
   pollBatch(model, batchId, items, options?): Promise<BatchResult[]>;
-  submitAndAwait(model, items, options?): Promise<BatchResult[]>;
+  submitAndAwait(model, items, options?, hooks?): Promise<BatchResult[]>;
 }
 ```
 
-### Port / drop
+Surfaced on `Provider` as `submitBatch` / `pollBatch` / `submitAndAwaitBatch`,
+plus `canBatch(model)` as the capability probe.
 
-| Port (~1,230 lines) | Drop (~290) |
+A `BatchItem` carries a full `Context` rather than a flattened
+prompt/system pair, so a batch item is the same shape as a realtime call and
+work moves between the two without being rewritten.
+
+| Transport | File | Notes |
+| --- | --- | --- |
+| Anthropic Message Batches | `api/batch/anthropic-batch.ts` | Structured output passes through `anthropicStrictToolSchema` first — Anthropic silently drops to ADVISORY decoding otherwise |
+| OpenAI-compatible `/v1/files` + `/v1/batches` | `api/batch/openai-batch.ts` | Also serves Azure and Fireworks, so the Fireworks GLM/Kimi/MiniMax/DeepSeek seats are batchable |
+| Gemini Batch Mode | `api/batch/google-batch.ts` | INLINE requests — no Files API round trip |
+
+Wired: `anthropic`, `openai`, `google`, `azure-openai-responses`, `fireworks`
+(both of its wire APIs). Loudly not batchable: `google-vertex`, `mistral`,
+`bedrock`, `radius`.
+
+**Gemini specifics worth remembering.** Inline requests have no `key` field —
+that belongs to the JSONL file format — so the correlation id rides
+`InlinedRequest.metadata`, which round-trips to `InlinedResponse.metadata`.
+And the config key is `responseJsonSchema` (standard JSON Schema); the older
+`responseSchema` expects Google's OpenAPI-ish dialect (uppercase
+`"type": "OBJECT"`) and batch preprocessing rejects it with an opaque
+`400 invalid argument`. Vertex uses the opposite dialect — one more reason it
+is a separate transport rather than a flag.
+
+### Provider knowledge encoded once, not per caller
+
+- **Duplicate `customId`** is caught locally before submit. Providers reject the
+  ENTIRE job over it and kill every healthy request with no per-item
+  attribution; catching it locally turns an opaque whole-job 400 into precise
+  per-item results and saves a guaranteed-doomed round trip.
+- **Token-limit stops** are reported as `truncated`, not as a JSON parse error.
+  The JSON is invalid because generation ran out of room; calling it a parse
+  error points the caller at their schema instead of at `max_tokens`.
+- **A `customId` the provider never returns** becomes an explicit per-item
+  failure rather than a silently short result array.
+
+### Ported / dropped (as built)
+
+| Ported | Dropped |
 | --- | --- |
-| `AnthropicBatchTransport` (Message Batches) | `RealtimeEmulatingBatchTransport` — see §4 |
-| `AzureBatchTransport` (OpenAI `/files` + `/batches`) | `PRICES_PER_MTOK` / `lookupPricePerMTok` / `estimateCostUsd` — use pi-ai's `ModelCost` |
-| `custom_id` validation, encoding, duplicate guard | `PF_REALTIME_EMULATION_CONCURRENCY`, `PF_AZURE_OPENAI_BATCH_ENABLED` |
-| JSONL result mappers (both providers) | |
+| Anthropic Message Batches transport | `RealtimeEmulatingBatchTransport` — see §4 |
+| OpenAI-compatible `/files` + `/batches` transport | `PRICES_PER_MTOK` / `lookupPricePerMTok` / `estimateCostUsd` — pi-ai's generated `ModelCost` replaces it |
+| `customId` validation + duplicate guard | `PF_REALTIME_EMULATION_CONCURRENCY`, `PF_AZURE_OPENAI_BATCH_ENABLED` |
+| JSONL result mappers | |
 | Usage extraction, poll/backoff/abort plumbing | |
 
-Preserve the duplicate-`custom_id` guard and its rationale: Anthropic 400s the
-**entire** batch when two requests share a `custom_id`, killing every healthy
-request in the job with no per-item attribution. That is exactly the provider
-knowledge a client library should own.
+Rewritten rather than copied: the transports use the provider SDKs already
+depended on (`@anthropic-ai/sdk`, `openai`, `@google/genai`) instead of raw
+`fetch`, matching how the streaming paths work, which is why the result is
+substantially smaller than the 1,517 lines it replaces.
+
+### Still open
+
+- **No live smoke test.** All three transports are typechecked and unit-tested
+  against the SDK shapes; none has submitted a real job.
+- **Gemini file mode (>20MB)** throws a clear error rather than silently
+  splitting or truncating. Implement if a job actually needs it.
+- **`packages/coding-agent` is untouched** — batch is pi-ai-only so far.
 
 ---
 
