@@ -1,4 +1,3 @@
-import { openaiBatchApi } from "../api/batch/lazy.ts";
 import { openAIResponsesApi } from "../api/openai-responses.lazy.ts";
 import { envApiKeyAuth } from "../auth/helpers.ts";
 import { createProvider, type Provider } from "../models.ts";
@@ -12,6 +11,5 @@ export function openaiProvider(): Provider<"openai-responses"> {
 		auth: { apiKey: envApiKeyAuth("OpenAI API key", ["OPENAI_API_KEY"]) },
 		models: Object.values(OPENAI_MODELS),
 		api: openAIResponsesApi(),
-		batch: openaiBatchApi(),
 	});
 }

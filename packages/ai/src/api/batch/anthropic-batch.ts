@@ -10,12 +10,14 @@ import type { BatchItem, BatchOptions, BatchResult, Model, ProviderBatch, Usage 
 import { anthropicStrictToolSchema } from "../../utils/strict-tool-schema.ts";
 import {
 	alignResults,
+	assertPlainTextContext,
 	batchDelay,
 	buildResult,
 	duplicateCustomIdFailures,
 	failAll,
 	failure,
 	findInvalidCustomIds,
+	plainTextOf,
 	resolveMaxPolls,
 	resolvePollInterval,
 	throwIfAborted,
@@ -37,7 +39,7 @@ function toRequestParams(model: Model<"anthropic-messages">, item: BatchItem): R
 	const system = item.context.systemPrompt;
 	const messages = item.context.messages.map((m) => ({
 		role: m.role === "assistant" ? "assistant" : "user",
-		content: typeof (m as { content?: unknown }).content === "string" ? (m as { content: string }).content : "",
+		content: plainTextOf(m),
 	}));
 
 	const params: Record<string, unknown> = {
@@ -124,6 +126,8 @@ async function drain(
 
 export const anthropicBatch: ProviderBatch = {
 	async submitBatch(model, items, options) {
+		throwIfAborted(options?.signal);
+		assertPlainTextContext(items);
 		const dupes = duplicateCustomIdFailures(items);
 		if (dupes)
 			throw new Error(dupes.find((r) => r.errorKind === "duplicate_custom_id")?.error ?? "duplicate customId");

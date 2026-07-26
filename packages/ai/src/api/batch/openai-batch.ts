@@ -1,12 +1,29 @@
 /**
- * OpenAI-compatible Batch transport (`/v1/files` + `/v1/batches`).
+ * OpenAI Batch transport (`/v1/files` + `/v1/batches`) for the
+ * `openai-completions` wire API.
  *
  * https://platform.openai.com/docs/guides/batch — ~50% of realtime pricing,
- * 24h completion window. Also serves Azure OpenAI and Fireworks, which
- * implement the same surface.
+ * 24h completion window. Input is a JSONL file uploaded via the Files API;
+ * output is a JSONL file downloaded the same way (no inline mode).
  *
- * Unlike Gemini there is no inline mode: input is a JSONL file uploaded via
- * the Files API, and output is a JSONL file downloaded the same way.
+ * NOT WIRED TO ANY PROVIDER YET — deliberately. Review 2026-07-26 found three
+ * ways the obvious wirings are wrong, each of which would have produced a
+ * `canBatch() === true` that fails on its first real call:
+ *
+ *  - `openai`: every model in that catalog is `api: "openai-responses"`, not
+ *    `openai-completions`. Batch for those needs `/v1/responses` JSONL with
+ *    Responses request/response shapes, which this module does not emit.
+ *  - `azure-openai-responses`: same Responses mismatch, AND the generated
+ *    Azure models carry `baseUrl: ""`, so the client below would silently
+ *    fall back to `https://api.openai.com/v1` and present an AZURE key to
+ *    OpenAI. Azure also needs resource/api-version resolution and
+ *    `AZURE_OPENAI_BASE_URL` from `BatchOptions.env`, none of which is here.
+ *  - `fireworks`: exposes neither this surface nor Anthropic's
+ *    `/v1/messages/batches`; its batch inference is a different API
+ *    (datasets + `/v1/accounts/{account}/batchInferenceJobs`).
+ *
+ * Wire this only to a provider verified to serve OpenAI-style batch on the
+ * `openai-completions` API, and fix the empty-baseUrl fallback below first.
  */
 
 import OpenAI, { toFile } from "openai";
@@ -14,11 +31,13 @@ import type { Api, BatchItem, BatchOptions, BatchResult, Model, ProviderBatch, U
 import { strictToolSchema } from "../../utils/strict-tool-schema.ts";
 import {
 	alignResults,
+	assertPlainTextContext,
 	batchDelay,
 	buildResult,
 	duplicateCustomIdFailures,
 	failAll,
 	failure,
+	plainTextOf,
 	resolveMaxPolls,
 	resolvePollInterval,
 	throwIfAborted,
@@ -40,7 +59,7 @@ function toRequestLine(model: Model<Api>, item: BatchItem): string {
 	for (const m of item.context.messages) {
 		messages.push({
 			role: m.role === "assistant" ? "assistant" : "user",
-			content: typeof (m as { content?: unknown }).content === "string" ? (m as { content: string }).content : "",
+			content: plainTextOf(m),
 		});
 	}
 
@@ -137,6 +156,8 @@ function mapResultsJsonl(items: readonly BatchItem[], jsonl: string): BatchResul
 
 export const openaiBatch: ProviderBatch = {
 	async submitBatch(model, items, options) {
+		throwIfAborted(options?.signal);
+		assertPlainTextContext(items);
 		const dupes = duplicateCustomIdFailures(items);
 		if (dupes)
 			throw new Error(dupes.find((r) => r.errorKind === "duplicate_custom_id")?.error ?? "duplicate customId");

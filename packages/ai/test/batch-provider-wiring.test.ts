@@ -82,19 +82,43 @@ describe("provider batch wiring", () => {
 });
 
 describe("built-in providers declare batch support honestly", () => {
-	it("anthropic, openai, google and fireworks can batch; radius cannot", async () => {
+	it("anthropic and google can batch", async () => {
 		const { anthropicProvider } = await import("../src/providers/anthropic.ts");
 		const { googleProvider } = await import("../src/providers/google.ts");
-		const { fireworksProvider } = await import("../src/providers/fireworks.ts");
-		const { radiusProvider } = await import("../src/providers/radius.ts");
-
 		expect(anthropicProvider().canBatch(model("anthropic-messages"))).toBe(true);
 		expect(googleProvider().canBatch(model("google-generative-ai"))).toBe(true);
-		// Fireworks serves both wire APIs and batches both.
-		expect(fireworksProvider().canBatch(model("anthropic-messages"))).toBe(true);
-		expect(fireworksProvider().canBatch(model("openai-completions"))).toBe(true);
+	});
 
-		// Radius is a realtime gateway — it must refuse rather than fan out.
+	// Review 2026-07-26: these three were wired and canBatch() returned true,
+	// but each would have failed on its first real call — openai/azure models are
+	// `openai-responses` (not the `openai-completions` shape the transport
+	// emits), azure additionally ships baseUrl:"" which would have sent an Azure
+	// key to api.openai.com, and Fireworks exposes neither OpenAI-style
+	// /files+/batches nor Anthropic /v1/messages/batches. An earlier version of
+	// THIS test asserted that broken wiring as correct. Claiming a capability
+	// you do not have is the exact failure NotBatchableError exists to prevent,
+	// so these must stay loudly unbatchable until a verified transport exists.
+	it.each([
+		["openai", "openai-responses"],
+		["azure-openai-responses", "azure-openai-responses"],
+	])("%s does NOT claim batch it cannot serve", async (provider, api) => {
+		const mod = await import(`../src/providers/${provider}.ts`);
+		const factory = Object.values(mod).find((v) => typeof v === "function") as () => {
+			canBatch: (m: Model<never>) => boolean;
+		};
+		expect(factory().canBatch(model(api))).toBe(false);
+	});
+
+	it("fireworks does NOT claim batch on either of its wire APIs", async () => {
+		const { fireworksProvider } = await import("../src/providers/fireworks.ts");
+		const fw = fireworksProvider();
+		expect(fw.canBatch(model("anthropic-messages"))).toBe(false);
+		expect(fw.canBatch(model("openai-completions"))).toBe(false);
+		await expect(fw.submitBatch(model("anthropic-messages"), items)).rejects.toThrow(NotBatchableError);
+	});
+
+	it("radius, a realtime gateway, refuses rather than fanning out", async () => {
+		const { radiusProvider } = await import("../src/providers/radius.ts");
 		const radius = radiusProvider();
 		expect(radius.canBatch(model("pi-messages"))).toBe(false);
 		await expect(radius.submitBatch(model("pi-messages"), items)).rejects.toThrow(NotBatchableError);

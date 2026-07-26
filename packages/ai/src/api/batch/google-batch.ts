@@ -23,11 +23,13 @@ import { GoogleGenAI } from "@google/genai";
 import type { BatchItem, BatchOptions, BatchResult, Model, ProviderBatch, Usage } from "../../types.ts";
 import {
 	alignResults,
+	assertPlainTextContext,
 	batchDelay,
 	buildResult,
 	duplicateCustomIdFailures,
 	failAll,
 	failure,
+	plainTextOf,
 	resolveMaxPolls,
 	resolvePollInterval,
 	throwIfAborted,
@@ -58,9 +60,7 @@ function createClient(model: Model<"google-generative-ai">, options?: BatchOptio
 function toInlinedRequest(model: Model<"google-generative-ai">, item: BatchItem): Record<string, unknown> {
 	const contents = item.context.messages.map((m) => ({
 		role: m.role === "assistant" ? "model" : "user",
-		parts: [
-			{ text: typeof (m as { content?: unknown }).content === "string" ? (m as { content: string }).content : "" },
-		],
+		parts: [{ text: plainTextOf(m) }],
 	}));
 
 	const config: Record<string, unknown> = {};
@@ -137,6 +137,8 @@ function mapResponses(items: readonly BatchItem[], inlined: unknown[]): BatchRes
 
 export const googleBatch: ProviderBatch = {
 	async submitBatch(model, items, options) {
+		throwIfAborted(options?.signal);
+		assertPlainTextContext(items);
 		const dupes = duplicateCustomIdFailures(items);
 		if (dupes)
 			throw new Error(dupes.find((r) => r.errorKind === "duplicate_custom_id")?.error ?? "duplicate customId");

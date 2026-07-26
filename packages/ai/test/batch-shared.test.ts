@@ -71,6 +71,26 @@ describe("buildResult", () => {
 		expect(r.value).toEqual({ a: "x" });
 	});
 
+	// Review 2026-07-26: buildResult used to only JSON.parse, so schema-invalid
+	// output was returned as ok:true. That is reachable in production because
+	// both Anthropic and OpenAI fall back to UNSTRICT generation when a schema
+	// cannot be strictified. The previous version of this suite would have
+	// passed with validation entirely absent — these cases pin that it isn't.
+	it("rejects JSON that parses but violates the declared schema (wrong type)", () => {
+		const r = buildResult(item("a", SCHEMA), '{"a":123}');
+		expect(r.ok).toBe(false);
+		expect(r.errorKind).toBe("parse");
+		expect(r.error).toMatch(/did not satisfy the declared outputSchema/);
+		expect(r.text).toBe('{"a":123}');
+	});
+
+	it("rejects JSON missing a required property", () => {
+		const r = buildResult(item("a", SCHEMA), '{"b":"x"}');
+		expect(r.ok).toBe(false);
+		expect(r.errorKind).toBe("parse");
+		expect(r.value).toBeUndefined();
+	});
+
 	it("reports unparseable output as a parse failure, keeping the raw text", () => {
 		const r = buildResult(item("a", SCHEMA), "not json");
 		expect(r.ok).toBe(false);

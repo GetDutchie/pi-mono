@@ -4,6 +4,8 @@
  * transports.
  */
 
+import type { TSchema } from "typebox";
+import { Value } from "typebox/value";
 import type { BatchErrorKind, BatchItem, BatchOptions, BatchResult, Usage } from "../../types.ts";
 
 export const DEFAULT_POLL_INTERVAL_MS = 60_000;
@@ -92,6 +94,54 @@ export function findInvalidCustomIds(items: readonly { customId: string }[], pat
 }
 
 // -----------------------------------------------------------------------------
+// Context support
+// -----------------------------------------------------------------------------
+
+/**
+ * v1 transports serialize plain string conversations only. Reject anything
+ * richer BEFORE submit rather than flattening it.
+ *
+ * The transports previously coerced non-string content with
+ * `typeof content === "string" ? content : ""`, which silently turned
+ * multimodal parts, assistant tool calls and tool results into empty messages
+ * and dropped `Context.tools` entirely — submitting a materially different
+ * prompt while returning a perfectly normal provider batch id. Same class of
+ * defect as emulating batch with realtime: the caller cannot tell from the
+ * result that they did not get what they asked for.
+ *
+ * Throws with the offending message index so the caller can find it.
+ */
+export function assertPlainTextContext(items: readonly BatchItem[]): void {
+	for (const item of items) {
+		if (item.context.tools?.length) {
+			throw new Error(
+				`batch item "${item.customId}": Context.tools is not supported by batch transports yet — ` +
+					"tool-calling conversations must run realtime. Use `outputSchema` for structured output.",
+			);
+		}
+		item.context.messages.forEach((message, index) => {
+			if (message.role === "toolResult") {
+				throw new Error(
+					`batch item "${item.customId}" message[${index}]: toolResult messages are not supported by batch transports yet.`,
+				);
+			}
+			const content = (message as { content?: unknown }).content;
+			if (typeof content !== "string") {
+				throw new Error(
+					`batch item "${item.customId}" message[${index}]: only plain string content is supported by batch ` +
+						"transports yet (multimodal parts, thinking blocks and tool calls would be silently dropped).",
+				);
+			}
+		});
+	}
+}
+
+/** Narrow a validated plain-text message to its string content. */
+export function plainTextOf(message: unknown): string {
+	return (message as { content: string }).content;
+}
+
+// -----------------------------------------------------------------------------
 // Results
 // -----------------------------------------------------------------------------
 
@@ -128,8 +178,10 @@ export function buildResult(item: BatchItem, text: string, usage?: Usage, trunca
 		};
 	}
 	if (!item.outputSchema) return { customId: item.customId, ok: true, text, usage };
+
+	let parsed: unknown;
 	try {
-		return { customId: item.customId, ok: true, text, value: JSON.parse(text), usage };
+		parsed = JSON.parse(text);
 	} catch (err) {
 		return {
 			...failure(item.customId, `output did not parse as JSON: ${(err as Error).message}`, "parse"),
@@ -137,6 +189,29 @@ export function buildResult(item: BatchItem, text: string, usage?: Usage, trunca
 			usage,
 		};
 	}
+
+	// Parsing is not enough. Both Anthropic and OpenAI fall back to UNSTRICT
+	// generation when a schema cannot be strictified, so syntactically valid but
+	// schema-invalid JSON genuinely reaches this path. Returning ok:true for it
+	// would hand the caller a value that does not match the schema they declared.
+	const errors = [...Value.Errors(item.outputSchema as TSchema, parsed)];
+	if (errors.length > 0) {
+		const detail = errors
+			.slice(0, 3)
+			.map((e) => `${(e as { instancePath?: string }).instancePath || "(root)"}: ${e.message}`)
+			.join("; ");
+		return {
+			...failure(
+				item.customId,
+				`output parsed but did not satisfy the declared outputSchema (${errors.length} error(s)): ${detail}`,
+				"parse",
+			),
+			text,
+			usage,
+		};
+	}
+
+	return { customId: item.customId, ok: true, text, value: parsed, usage };
 }
 
 /**
