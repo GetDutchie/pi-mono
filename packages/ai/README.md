@@ -722,6 +722,12 @@ volume does.
 A `BatchItem` carries a full `Context`, so a batch item is the same shape as a
 realtime call — you can move work between the two without rewriting it.
 
+v1 transports serialize **plain string conversations only**. Multimodal parts,
+assistant tool calls, tool results and `Context.tools` are rejected before
+submit with the offending `customId` and message index — they are not silently
+flattened. Use `outputSchema` for structured output; run tool-calling
+conversations realtime.
+
 ```typescript
 const model = models.getModel("anthropic", "claude-sonnet-5")!;
 
@@ -759,7 +765,7 @@ distinguishes the causes so you can retry the right ones:
 | `submit` | Job rejected before it ran |
 | `provider_item` | Provider reported a failure for this item |
 | `truncated` | Generation hit the token ceiling; output is incomplete |
-| `parse` | Output returned but did not parse against `outputSchema` |
+| `parse` | Output did not parse as JSON, or parsed but violated `outputSchema` |
 | `duplicate_custom_id` | Two items shared a `customId` (caught locally before submit) |
 
 A duplicate `customId` is rejected locally rather than sent, because providers
@@ -816,16 +822,25 @@ if (!provider.canBatch(model)) {
 | Provider / API | Batch | Notes |
 | --- | --- | --- |
 | `anthropic` (`anthropic-messages`) | ✅ | Message Batches |
-| `openai` (`openai-completions`) | ✅ | `/v1/files` + `/v1/batches` |
-| `azure-openai-responses` | ✅ | OpenAI-compatible batch |
-| `fireworks` | ✅ | Both of its wire APIs |
 | `google` (`google-generative-ai`) | ✅ | Gemini Batch Mode, inline requests (20MB cap) |
+| `openai` | ❌ | Catalog is `openai-responses`; batch would need `/v1/responses` JSONL |
+| `azure-openai-responses` | ❌ | Same, plus Azure resource/api-version resolution |
+| `fireworks` | ❌ | Batch inference is a different API (datasets + batch-inference jobs) |
 | `google-vertex` | ❌ | GCS-in/GCS-out; not implemented |
 | `bedrock`, `mistral`, `radius` | ❌ | No batch surface wired |
 
+An OpenAI-style `/v1/files` + `/v1/batches` transport exists in the source but
+is deliberately wired to nothing: no provider in the catalog was verified to
+serve that surface on the `openai-completions` API. Declaring `canBatch()` for
+a provider that then fails on its first call is the same dishonesty as
+emulating batch, so it stays unwired until a transport is confirmed.
+
 Structured output is honoured on every batch transport, translated to each
 provider's native constrained-decoding surface — so batch results are schema-
-constrained exactly as realtime ones are.
+constrained exactly as realtime ones are. Results are additionally **validated**
+against the declared `outputSchema` before being reported `ok`, because
+providers fall back to unstrict generation when a schema cannot be compiled to
+a grammar.
 
 ## Image Input
 

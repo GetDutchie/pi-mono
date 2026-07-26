@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added `ProviderBatch`, a third optional per-provider capability module alongside `ProviderStreams` and `ProviderImages`, with transports for Anthropic Message Batches, the OpenAI-compatible `/v1/files` + `/v1/batches` surface (also serving Azure and Fireworks), and Gemini Batch Mode. Surfaced on `Provider` as `submitBatch` / `pollBatch` / `submitAndAwaitBatch`, with `canBatch(model)` as the capability probe. Structured output is honoured on every transport, translated to each provider's native constrained-decoding surface.
+- Added `ProviderBatch`, a third optional per-provider capability module alongside `ProviderStreams` and `ProviderImages`, wired for Anthropic Message Batches and Gemini Batch Mode. Surfaced on `Provider` as `submitBatch` / `pollBatch` / `submitAndAwaitBatch`, with `canBatch(model)` as the capability probe. Structured output is honoured on every transport, translated to each provider's native constrained-decoding surface, and results are validated against the declared schema before being reported successful. Batch items serialize plain string conversations only; richer `Context` shapes are rejected before submit rather than silently flattened.
 
 ### Changed
 

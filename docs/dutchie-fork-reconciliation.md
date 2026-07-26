@@ -153,15 +153,37 @@ A `BatchItem` carries a full `Context` rather than a flattened
 prompt/system pair, so a batch item is the same shape as a realtime call and
 work moves between the two without being rewritten.
 
-| Transport | File | Notes |
+| Transport | File | Wired to |
 | --- | --- | --- |
-| Anthropic Message Batches | `api/batch/anthropic-batch.ts` | Structured output passes through `anthropicStrictToolSchema` first — Anthropic silently drops to ADVISORY decoding otherwise |
-| OpenAI-compatible `/v1/files` + `/v1/batches` | `api/batch/openai-batch.ts` | Also serves Azure and Fireworks, so the Fireworks GLM/Kimi/MiniMax/DeepSeek seats are batchable |
-| Gemini Batch Mode | `api/batch/google-batch.ts` | INLINE requests — no Files API round trip |
+| Anthropic Message Batches | `api/batch/anthropic-batch.ts` | `anthropic` |
+| Gemini Batch Mode (inline) | `api/batch/google-batch.ts` | `google` |
+| OpenAI `/v1/files` + `/v1/batches` | `api/batch/openai-batch.ts` | **nothing — see below** |
 
-Wired: `anthropic`, `openai`, `google`, `azure-openai-responses`, `fireworks`
-(both of its wire APIs). Loudly not batchable: `google-vertex`, `mistral`,
-`bedrock`, `radius`.
+Loudly not batchable: `openai`, `azure-openai-responses`, `fireworks`,
+`google-vertex`, `mistral`, `bedrock`, `radius`.
+
+### Why openai / azure / fireworks are NOT wired
+
+They were, briefly. Adversarial review (gpt-5.6-sol, 2026-07-26) found all
+three would return `canBatch() === true` and then fail on their first real
+call:
+
+- **azure-openai-responses** — generated models carry `baseUrl: ""`. The
+  transport treated the empty string as falsy and omitted `baseURL`, so the
+  OpenAI SDK would fall back to `https://api.openai.com/v1` and present an
+  **Azure key to OpenAI**. Azure also needs resource/api-version resolution and
+  `AZURE_OPENAI_BASE_URL` from `BatchOptions.env`.
+- **openai** — every model in that catalog is `api: "openai-responses"`, but
+  the transport emits `/v1/chat/completions` JSONL and decodes
+  `choices[0].message.content`.
+- **fireworks** — exposes neither OpenAI-style `/files` + `/batches` nor
+  Anthropic `/v1/messages/batches`. Its batch inference is a different API
+  (datasets + `/v1/accounts/{account}/batchInferenceJobs`). **API-compat does
+  not imply batch-compat** — that was an unverified assumption.
+
+The transport is kept, unwired, with those traps documented at the top of the
+file. Two verified transports beat three where two are wrong. Note this means
+the cheap Fireworks GLM/Kimi/MiniMax seats are **not** batchable yet.
 
 **Gemini specifics worth remembering.** Inline requests have no `key` field —
 that belongs to the JSONL file format — so the correlation id rides
@@ -183,6 +205,15 @@ is a separate transport rather than a flag.
   error points the caller at their schema instead of at `max_tokens`.
 - **A `customId` the provider never returns** becomes an explicit per-item
   failure rather than a silently short result array.
+- **Rich `Context` is rejected, not flattened.** v1 serializes plain string
+  conversations only. The first cut coerced with
+  `typeof content === "string" ? content : ""`, which turned multimodal parts,
+  tool calls and thinking blocks into empty messages and dropped
+  `Context.tools` — submitting a materially different prompt while returning a
+  normal batch id. Same class of dishonesty as emulating batch.
+- **Output is validated against `outputSchema`, not merely parsed.** Providers
+  fall back to unstrict generation when a schema cannot be compiled to a
+  grammar, so schema-invalid JSON genuinely reaches the result path.
 
 ### Ported / dropped (as built)
 
@@ -201,10 +232,17 @@ substantially smaller than the 1,517 lines it replaces.
 
 ### Still open
 
-- **No live smoke test.** All three transports are typechecked and unit-tested
-  against the SDK shapes; none has submitted a real job.
-- **Gemini file mode (>20MB)** throws a clear error rather than silently
-  splitting or truncating. Implement if a job actually needs it.
+- **No live smoke test.** Both wired transports are typechecked and unit-tested
+  against the SDK shapes; neither has submitted a real job.
+- **No mocked-SDK transport tests** capturing actual request bodies or mapping
+  representative provider responses (sol MINOR-1). Owed for Anthropic and
+  Gemini.
+- **Per-request abort plumbing.** `throwIfAborted` guards submit and the poll
+  loop, but the SDK-level signals (`RequestOptions.signal`,
+  `CreateBatchJobConfig.abortSignal`) are not passed into retrieve/download.
+- **Gemini file mode (>20MB)** throws rather than silently splitting.
+- **Fireworks batch** needs its real dataset/job transport before those seats
+  can batch.
 - **`packages/coding-agent` is untouched** — batch is pi-ai-only so far.
 
 ---
