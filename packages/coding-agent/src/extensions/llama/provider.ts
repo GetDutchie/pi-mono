@@ -7,6 +7,7 @@ import type {
 	ProviderStreamOptions,
 	RefreshModelsContext,
 } from "@earendil-works/pi-ai";
+import { NotBatchableError } from "@earendil-works/pi-ai";
 import { stream, streamSimple } from "@earendil-works/pi-ai/compat";
 import { LlamaClient, type LlamaModelInfo, llamaInferenceUrl, normalizeLlamaServerUrl } from "./client.ts";
 
@@ -128,6 +129,12 @@ export function createLlamaProvider(): LlamaProviderController {
 		},
 		stream: (model, context, options) => stream(model, context, options as ProviderStreamOptions | undefined),
 		streamSimple: (model, context, options) => streamSimple(model, context, options),
+		// A local llama.cpp server has no asynchronous batch API. Refuse loudly
+		// rather than fanning the work out as sequential realtime calls.
+		canBatch: () => false,
+		submitBatch: (model) => Promise.reject(new NotBatchableError(LLAMA_PROVIDER_ID, model.id)),
+		pollBatch: (model) => Promise.reject(new NotBatchableError(LLAMA_PROVIDER_ID, model.id)),
+		submitAndAwaitBatch: (model) => Promise.reject(new NotBatchableError(LLAMA_PROVIDER_ID, model.id)),
 	};
 
 	return { provider, setCatalog };

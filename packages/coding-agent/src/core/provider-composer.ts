@@ -10,6 +10,7 @@ import {
 	lazyStream,
 	type Model,
 	type ModelAuth,
+	NotBatchableError,
 	type OAuthAuth,
 	type OAuthCredentials,
 	type OAuthLoginCallbacks,
@@ -495,6 +496,24 @@ export function composeModelProvider(
 			: undefined,
 		stream: (model, context, options) => streamWith(model, context, options, false),
 		streamSimple: (model, context, options) => streamWith(model, context, options, true),
+		// Batch DELEGATES to the composed base provider. Composition must not
+		// silently strip a capability the base has — if you compose on top of
+		// anthropic, batch keeps working. When the base cannot batch (or there is
+		// no base), refuse loudly rather than degrade: there is no realtime
+		// emulation anywhere in this stack.
+		canBatch: (model) => (base && supportsBaseApi(model) ? base.canBatch(model) : false),
+		submitBatch: (model, items, options) =>
+			base && supportsBaseApi(model)
+				? base.submitBatch(model, items, options)
+				: Promise.reject(new NotBatchableError(providerId, model.id)),
+		pollBatch: (model, batchId, items, options) =>
+			base && supportsBaseApi(model)
+				? base.pollBatch(model, batchId, items, options)
+				: Promise.reject(new NotBatchableError(providerId, model.id)),
+		submitAndAwaitBatch: (model, items, options, hooks) =>
+			base && supportsBaseApi(model)
+				? base.submitAndAwaitBatch(model, items, options, hooks)
+				: Promise.reject(new NotBatchableError(providerId, model.id)),
 	};
 }
 
