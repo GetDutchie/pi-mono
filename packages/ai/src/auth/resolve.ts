@@ -1,4 +1,5 @@
-import type { Api, ImagesApi, ImagesModel, Model, ProviderEnv } from "../types.ts";
+import type { ProviderEnv } from "../types.ts";
+import { formatThrownValue } from "../utils/diagnostics.ts";
 import type {
 	ApiKeyAuth,
 	ApiKeyCredential,
@@ -22,14 +23,19 @@ export class ModelsError extends Error {
 	readonly code: ModelsErrorCode;
 
 	constructor(code: ModelsErrorCode, message: string, options?: { cause?: unknown }) {
-		super(message, options);
+		super(withCauseDetail(message, options?.cause), options);
 		this.name = "ModelsError";
 		this.code = code;
 	}
 }
 
-/** Model shape auth resolution receives: chat or image-generation models. */
-export type AuthModel = Model<Api> | ImagesModel<ImagesApi>;
+/** Callers surface `error.message` only, so keep the underlying reason in it. */
+function withCauseDetail(message: string, cause: unknown): string {
+	if (cause === undefined || cause === null) return message;
+	const detail = formatThrownValue(cause).trim();
+	if (!detail || message.includes(detail)) return message;
+	return `${message}: ${detail}`;
+}
 
 /**
  * Auth resolution shared by the `Models` and `ImagesModels` collections.
@@ -39,7 +45,6 @@ export type AuthModel = Model<Api> | ImagesModel<ImagesApi>;
  */
 export async function resolveProviderAuth(
 	provider: { id: string; auth: ProviderAuth },
-	model: AuthModel,
 	credentials: CredentialStore,
 	authContext: AuthContext,
 	overrides?: AuthResolutionOverrides,
@@ -47,7 +52,7 @@ export async function resolveProviderAuth(
 	const requestAuthContext = overrides?.env ? overlayEnvAuthContext(authContext, overrides.env) : authContext;
 
 	if (overrides?.apiKey !== undefined && provider.auth.apiKey) {
-		return resolveApiKey(requestAuthContext, provider.auth.apiKey, model, {
+		return resolveApiKey(requestAuthContext, provider.auth.apiKey, provider.id, {
 			type: "api_key",
 			key: overrides.apiKey,
 			env: overrides.env,
@@ -61,13 +66,15 @@ export async function resolveProviderAuth(
 		}
 		if (stored.type === "api_key" && provider.auth.apiKey) {
 			const credential = overrides?.env ? { ...stored, env: { ...stored.env, ...overrides.env } } : stored;
-			return resolveApiKey(requestAuthContext, provider.auth.apiKey, model, credential);
+			return resolveApiKey(requestAuthContext, provider.auth.apiKey, provider.id, credential);
 		}
 		return undefined;
 	}
 
 	// Ambient (env vars, AWS profiles, ADC files).
-	return provider.auth.apiKey ? resolveApiKey(requestAuthContext, provider.auth.apiKey, model, undefined) : undefined;
+	return provider.auth.apiKey
+		? resolveApiKey(requestAuthContext, provider.auth.apiKey, provider.id, undefined)
+		: undefined;
 }
 
 function overlayEnvAuthContext(base: AuthContext, env: ProviderEnv): AuthContext {
@@ -122,13 +129,13 @@ async function resolveStoredOAuth(
 async function resolveApiKey(
 	authContext: AuthContext,
 	apiKey: ApiKeyAuth,
-	model: AuthModel,
+	providerId: string,
 	credential: ApiKeyCredential | undefined,
 ): Promise<AuthResult | undefined> {
 	try {
-		return await apiKey.resolve({ model, ctx: authContext, credential });
+		return await apiKey.resolve({ ctx: authContext, credential });
 	} catch (error) {
-		throw new ModelsError("auth", `API key auth failed for provider ${model.provider}`, { cause: error });
+		throw new ModelsError("auth", `API key auth failed for provider ${providerId}`, { cause: error });
 	}
 }
 
