@@ -1010,8 +1010,19 @@ function buildParams(
 	}
 
 	if (options?.outputSchema) {
+		// Native structured output must be sent in the strict, grammar-compilable
+		// subset for Anthropic to actually LOGIT-MASK decoding (additionalProperties:
+		// false on every object, no unsupported keywords, no stray $schema key) —
+		// exactly what the SDK's own jsonSchemaOutputFormat helper does via
+		// transformJSONSchema. Sending the raw schema left Anthropic in ADVISORY
+		// (unconstrained) mode, which allowed rare degenerate generations to emit
+		// structurally-invalid JSON. anthropicStrictToolSchema applies that same
+		// transform (returning null only for a genuinely un-strictifiable schema,
+		// in which case we fall back to the raw schema rather than drop it).
+		const constrainedSchema =
+			anthropicStrictToolSchema(options.outputSchema.schema) ?? options.outputSchema.schema;
 		params.output_config = {
-			format: { type: "json_schema", schema: options.outputSchema.schema },
+			format: { type: "json_schema", schema: constrainedSchema },
 		};
 	}
 
