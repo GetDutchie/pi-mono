@@ -4,10 +4,11 @@
 
 ### Added
 
-- Added `ProviderBatch`, a third optional per-provider capability module alongside `ProviderStreams` and `ProviderImages`, wired for Anthropic Message Batches and Gemini Batch Mode. Surfaced on `Provider` as `submitBatch` / `pollBatch` / `submitAndAwaitBatch`, with `canBatch(model)` as the capability probe. Structured output is honoured on every transport, translated to each provider's native constrained-decoding surface, and results are validated against the declared schema before being reported successful. Batch items serialize plain string conversations only; richer `Context` shapes are rejected before submit rather than silently flattened.
+- Added `ProviderBatch`, a third optional per-provider capability module alongside `ProviderStreams` and `ProviderImages`, wired for Anthropic Message Batches, Gemini Batch Mode, and Fireworks Batch Inference. Surfaced on `Provider` as `submitBatch` / `pollBatch` / `submitAndAwaitBatch`, with `canBatch(model)` as the capability probe. Structured output is honoured on every transport, translated to each provider's native constrained-decoding surface, and results are validated against the declared schema before being reported successful. Batch items serialize plain string conversations only; richer `Context` shapes are rejected before submit rather than silently flattened.
 
 ### Changed
 
+- Added Fireworks batch support via its account-scoped datasets + `batchInferenceJobs` control plane (50% off serverless, plus automatic prompt caching). Requires `FIREWORKS_ACCOUNT_ID` alongside `FIREWORKS_API_KEY`; Fireworks is OpenAI/Anthropic-compatible for synchronous inference only, so batch could not reuse either existing transport.
 - Requesting batch execution from a provider with no batch transport now rejects with `NotBatchableError`. Batch is a pricing decision, so it is never emulated by running the items as individual realtime calls, and a batch id is always a real provider-side job id.
 
 ## [0.82.1] - 2026-07-25

@@ -158,15 +158,16 @@ work moves between the two without being rewritten.
 | Anthropic Message Batches | `api/batch/anthropic-batch.ts` | `anthropic` |
 | Gemini Batch Mode (inline) | `api/batch/google-batch.ts` | `google` |
 | OpenAI `/v1/files` + `/v1/batches` | `api/batch/openai-batch.ts` | **nothing — see below** |
+| Fireworks datasets + `batchInferenceJobs` | `api/batch/fireworks-batch.ts` | `fireworks` |
 
-Loudly not batchable: `openai`, `azure-openai-responses`, `fireworks`,
-`google-vertex`, `mistral`, `bedrock`, `radius`.
+Loudly not batchable: `openai`, `azure-openai-responses`, `google-vertex`,
+`mistral`, `bedrock`, `radius`.
 
-### Why openai / azure / fireworks are NOT wired
+### Why openai / azure are NOT wired
 
-They were, briefly. Adversarial review (gpt-5.6-sol, 2026-07-26) found all
-three would return `canBatch() === true` and then fail on their first real
-call:
+They were, briefly — along with Fireworks. Adversarial review (gpt-5.6-sol,
+2026-07-26) found all three would return `canBatch() === true` and then fail on
+their first real call:
 
 - **azure-openai-responses** — generated models carry `baseUrl: ""`. The
   transport treated the empty string as falsy and omitted `baseURL`, so the
@@ -181,9 +182,36 @@ call:
   (datasets + `/v1/accounts/{account}/batchInferenceJobs`). **API-compat does
   not imply batch-compat** — that was an unverified assumption.
 
-The transport is kept, unwired, with those traps documented at the top of the
-file. Two verified transports beat three where two are wrong. Note this means
-the cheap Fireworks GLM/Kimi/MiniMax seats are **not** batchable yet.
+The OpenAI transport is kept, unwired, with those traps documented at the top
+of the file. Two verified transports beat three where two are wrong.
+
+### Fireworks, re-wired properly
+
+Unwiring Fireworks was right but incomplete: it *does* have batch, and at 50%
+off serverless plus automatic prompt caching (a further 50% on cached tokens)
+it is the cheapest of the three — which is the whole economic case for the
+GLM/Kimi/MiniMax/DeepSeek seats. So it came back as a **fourth transport**,
+`api/batch/fireworks-batch.ts`, against its real control plane. Four shape
+differences from the OpenAI format, all load-bearing:
+
+1. URLs are account-scoped → requires `FIREWORKS_ACCOUNT_ID`, absent from the
+   model and provider config. Missing it throws with the variable named.
+2. A JSONL line is `{custom_id, body}` — no `method`/`url` — and the model is
+   set once on the **job**, not per line.
+3. Job parameters are camelCase (`inputDatasetId`, `maxTokens`).
+4. Results land in an output **dataset** fetched via signed URLs, not an
+   `output_file_id` through the Files API.
+
+The control plane is the bare host while the provider `baseUrl` is the
+inference plane, so the base trims the `/inference` suffix rather than
+hardcoding the hostname. Signed download URLs carry their own auth and are
+fetched without the API key. Batch is wired as a *single* transport, not keyed
+by `model.api`: the control plane is identical whether a model is served
+realtime over `anthropic-messages` or `openai-completions`.
+
+Its tests assert the request bodies actually put on the wire, and were checked
+for vacuity by mutation — emitting OpenAI-format lines, leaking the API key to
+the signed URL, and dropping the abort guard each fail a specific test.
 
 **Gemini specifics worth remembering.** Inline requests have no `key` field —
 that belongs to the JSONL file format — so the correlation id rides
@@ -241,8 +269,12 @@ substantially smaller than the 1,517 lines it replaces.
   loop, but the SDK-level signals (`RequestOptions.signal`,
   `CreateBatchJobConfig.abortSignal`) are not passed into retrieve/download.
 - **Gemini file mode (>20MB)** throws rather than silently splitting.
-- **Fireworks batch** needs its real dataset/job transport before those seats
-  can batch.
+- **Fireworks `response_format`** is unverified against a live job. The docs
+  define a line's `body` as the standard Chat Completions parameters, of which
+  `response_format` is one, but no real batch has exercised it. First thing to
+  check if a live run rejects a schema-constrained job.
+- **Fireworks >150MB inputs** are refused; datasets up to the documented 1GB
+  ceiling need a pre-requested multipart upload endpoint, not implemented.
 - **`packages/coding-agent` is untouched** — batch is pi-ai-only so far.
 
 ---

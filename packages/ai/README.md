@@ -823,9 +823,9 @@ if (!provider.canBatch(model)) {
 | --- | --- | --- |
 | `anthropic` (`anthropic-messages`) | ✅ | Message Batches |
 | `google` (`google-generative-ai`) | ✅ | Gemini Batch Mode, inline requests (20MB cap) |
+| `fireworks` | ✅ | Datasets + batch-inference jobs; needs `FIREWORKS_ACCOUNT_ID` |
 | `openai` | ❌ | Catalog is `openai-responses`; batch would need `/v1/responses` JSONL |
 | `azure-openai-responses` | ❌ | Same, plus Azure resource/api-version resolution |
-| `fireworks` | ❌ | Batch inference is a different API (datasets + batch-inference jobs) |
 | `google-vertex` | ❌ | GCS-in/GCS-out; not implemented |
 | `bedrock`, `mistral`, `radius` | ❌ | No batch surface wired |
 
@@ -834,6 +834,16 @@ is deliberately wired to nothing: no provider in the catalog was verified to
 serve that surface on the `openai-completions` API. Declaring `canBatch()` for
 a provider that then fails on its first call is the same dishonesty as
 emulating batch, so it stays unwired until a transport is confirmed.
+
+**Fireworks** is the cheapest of the three: 50% off serverless per-token
+pricing *plus* automatic prompt caching for a further 50% on cached tokens, no
+request-count ceiling, input dataset up to 1GB. It is API-compatible with
+OpenAI and Anthropic for *synchronous* inference only — batch is a separate,
+account-scoped control plane (datasets + `batchInferenceJobs`), so it needs
+`FIREWORKS_ACCOUNT_ID` in addition to `FIREWORKS_API_KEY`. The account id is
+the one that owns your datasets; it is **not** the `accounts/fireworks/...`
+prefix inside a model id, which identifies the model's publisher. Jobs larger
+than the 150MB streamlined-upload limit are refused rather than split.
 
 Structured output is honoured on every batch transport, translated to each
 provider's native constrained-decoding surface — so batch results are schema-
