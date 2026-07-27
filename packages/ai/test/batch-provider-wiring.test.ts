@@ -89,15 +89,18 @@ describe("built-in providers declare batch support honestly", () => {
 		expect(googleProvider().canBatch(model("google-generative-ai"))).toBe(true);
 	});
 
-	// Review 2026-07-26: these three were wired and canBatch() returned true,
-	// but each would have failed on its first real call — openai/azure models are
+	// Review 2026-07-26: these were wired and canBatch() returned true, but each
+	// would have failed on its first real call — openai/azure models are
 	// `openai-responses` (not the `openai-completions` shape the transport
-	// emits), azure additionally ships baseUrl:"" which would have sent an Azure
-	// key to api.openai.com, and Fireworks exposes neither OpenAI-style
-	// /files+/batches nor Anthropic /v1/messages/batches. An earlier version of
-	// THIS test asserted that broken wiring as correct. Claiming a capability
-	// you do not have is the exact failure NotBatchableError exists to prevent,
-	// so these must stay loudly unbatchable until a verified transport exists.
+	// emits), and azure additionally ships baseUrl:"" which would have sent an
+	// Azure key to api.openai.com. An earlier version of THIS test asserted that
+	// broken wiring as correct. Claiming a capability you do not have is the
+	// exact failure NotBatchableError exists to prevent, so these must stay
+	// loudly unbatchable until a verified transport exists.
+	//
+	// Fireworks was unwired alongside them and has since been RE-wired against
+	// its real, account-scoped datasets + batchInferenceJobs control plane
+	// (see fireworks-batch.ts). It is covered below and in fireworks-batch.test.ts.
 	it.each([
 		["openai", "openai-responses"],
 		["azure-openai-responses", "azure-openai-responses"],
@@ -109,12 +112,15 @@ describe("built-in providers declare batch support honestly", () => {
 		expect(factory().canBatch(model(api))).toBe(false);
 	});
 
-	it("fireworks does NOT claim batch on either of its wire APIs", async () => {
+	// Fireworks batch is NOT api-keyed: its control plane is the same regardless
+	// of whether a model is served realtime over anthropic-messages or
+	// openai-completions, and a batch line's body is Chat-Completions-shaped
+	// either way. One transport must therefore answer for both.
+	it("fireworks batches on both of its wire APIs via one transport", async () => {
 		const { fireworksProvider } = await import("../src/providers/fireworks.ts");
 		const fw = fireworksProvider();
-		expect(fw.canBatch(model("anthropic-messages"))).toBe(false);
-		expect(fw.canBatch(model("openai-completions"))).toBe(false);
-		await expect(fw.submitBatch(model("anthropic-messages"), items)).rejects.toThrow(NotBatchableError);
+		expect(fw.canBatch(model("anthropic-messages"))).toBe(true);
+		expect(fw.canBatch(model("openai-completions"))).toBe(true);
 	});
 
 	it("radius, a realtime gateway, refuses rather than fanning out", async () => {

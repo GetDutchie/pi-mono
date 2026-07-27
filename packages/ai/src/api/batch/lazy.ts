@@ -23,3 +23,4 @@ const lazyBatch = (
 export const anthropicBatchApi = (): ProviderBatch => lazyBatch(() => import("./anthropic-batch.ts"), "anthropicBatch");
 export const openaiBatchApi = (): ProviderBatch => lazyBatch(() => import("./openai-batch.ts"), "openaiBatch");
 export const googleBatchApi = (): ProviderBatch => lazyBatch(() => import("./google-batch.ts"), "googleBatch");
+export const fireworksBatchApi = (): ProviderBatch => lazyBatch(() => import("./fireworks-batch.ts"), "fireworksBatch");
