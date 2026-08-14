@@ -2,7 +2,7 @@
 
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, relative, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const packages = [
@@ -10,12 +10,28 @@ const packages = [
 	{ directory: "packages/tui", upstreamName: "@earendil-works/pi-tui", dutchieName: "@getdutchie/pi-tui" },
 	{ directory: "packages/agent", upstreamName: "@earendil-works/pi-agent-core", dutchieName: "@getdutchie/pi-agent-core" },
 	{
-		directory: "packages/storage/sqlite-node",
-		upstreamName: "@earendil-works/pi-storage-sqlite-node",
-		dutchieName: "@getdutchie/pi-storage-sqlite-node",
+		directory: "packages/session-backends/sqlite-node",
+		upstreamName: "@earendil-works/pi-session-backend-sqlite-node",
+		dutchieName: "@getdutchie/pi-session-backend-sqlite-node",
 	},
 	{ directory: "packages/coding-agent", upstreamName: "@earendil-works/pi-coding-agent", dutchieName: "@getdutchie/pi-coding-agent" },
 ];
+
+/**
+ * Workspace packages that are deliberately NOT rescoped: the fork does not
+ * modify them, so a rescoped package may depend on the public
+ * `@earendil-works/*` release at the same version. Each entry maps the package
+ * name to its directory so the staging step can PROVE it is still identical to
+ * upstream before trusting public resolution.
+ *
+ * None of these may depend on pi-ai, or a consumer would end up with the fork's
+ * @getdutchie/pi-ai and a second upstream copy in the same tree.
+ */
+const externalUpstreamPackages = new Map([
+	["@earendil-works/pi-telemetry", "packages/telemetry"],
+	["@earendil-works/pi-client", "packages/client"],
+	["@earendil-works/pi-protocol", "packages/protocol"],
+]);
 
 const rewriteExtensions = new Set([
 	".cjs",
@@ -34,6 +50,7 @@ const rewriteExtensions = new Set([
 const ignoredDirectories = new Set([".git", "node_modules"]);
 const packageNameMap = new Map(packages.map((pkg) => [pkg.upstreamName, pkg.dutchieName]));
 const upstreamInternalNames = packages.map((pkg) => pkg.upstreamName);
+const UPSTREAM_SPECIFIER_PATTERN = /@earendil-works\/[a-z0-9][a-z0-9-]*/g;
 
 function log(message = "") {
 	process.stdout.write(`${message}\n`);
@@ -246,15 +263,67 @@ function validateNoUpstreamInternalSpecifiers(stageDirectory, pkg) {
 		for (const upstreamName of upstreamInternalNames) {
 			if (content.includes(upstreamName)) failures.push(`${relative(stageDirectory, file)} still contains ${upstreamName}`);
 		}
+		// Anything else in the @earendil-works scope must be a package this script
+		// KNOWS is unmodified by the fork. Without this, an upstream merge that
+		// introduces a new workspace dependency ships silently: the rescoped
+		// package would resolve it from public npm, and if the fork ever patches
+		// that package the cut would quietly run upstream's code instead.
+		for (const specifier of content.match(UPSTREAM_SPECIFIER_PATTERN) ?? []) {
+			if (packageNameMap.has(specifier) || externalUpstreamPackages.has(specifier)) continue;
+			failures.push(
+				`${relative(stageDirectory, file)} references unknown workspace package ${specifier}. ` +
+					"Add it to `packages` to rescope it, or to `externalUpstreamPackages` if the fork does not modify it.",
+			);
+		}
 	}
 	if (failures.length > 0) {
-		throw new Error(`${pkg.dutchieName} staging validation failed:\n${failures.map((failure) => `  - ${failure}`).join("\n")}`);
+		const unique = [...new Set(failures)];
+		throw new Error(`${pkg.dutchieName} staging validation failed:\n${unique.map((failure) => `  - ${failure}`).join("\n")}`);
 	}
+}
+
+/**
+ * Prove that every package we let resolve from public npm really is identical to
+ * upstream at this commit. If the fork starts patching one of them, the cut must
+ * rescope it instead of silently shipping upstream's code.
+ */
+function verifyExternalUpstreamPackagesAreUnmodified(repoRoot) {
+	const revParse = spawnSync(commandForPlatform("git"), ["rev-parse", "--verify", "--quiet", "upstream/main"], {
+		cwd: repoRoot,
+		encoding: "utf8",
+	});
+	if (revParse.status !== 0) {
+		log("WARNING: no upstream/main ref, cannot verify that unrescoped workspace packages match upstream.");
+		log("         Run `git fetch upstream` to enable this check.");
+		return;
+	}
+
+	const modified = [];
+	for (const [name, directory] of externalUpstreamPackages) {
+		const diff = spawnSync(commandForPlatform("git"), ["diff", "--quiet", "upstream/main", "--", directory], {
+			cwd: repoRoot,
+			encoding: "utf8",
+		});
+		if (diff.status !== 0) modified.push(`${name} (${directory})`);
+	}
+	if (modified.length > 0) {
+		throw new Error(
+			`These packages are treated as unmodified upstream dependencies but differ from upstream/main:\n${modified
+				.map((entry) => `  - ${entry}`)
+				.join("\n")}\nRescope them in \`packages\` instead of resolving them from public npm.`,
+		);
+	}
+	log(`Verified ${externalUpstreamPackages.size} unrescoped workspace packages match upstream/main.`);
 }
 
 function stagePackage(pkg, paths, version) {
 	const sourceDirectory = join(paths.repoRoot, pkg.directory);
-	const stageDirectory = join(paths.stageRoot, basename(pkg.directory) === "sqlite-node" ? "storage-sqlite-node" : basename(pkg.directory));
+	const stageDirectory = join(paths.stageRoot, pkg.dutchieName.replace("@getdutchie/", ""));
+	if (!existsSync(join(sourceDirectory, "package.json"))) {
+		throw new Error(
+			`${pkg.directory}/package.json does not exist. Upstream may have moved or renamed ${pkg.upstreamName}; update the \`packages\` list.`,
+		);
+	}
 	if (!existsSync(join(sourceDirectory, "dist"))) {
 		throw new Error(`${pkg.directory}/dist does not exist. Run npm run build:offline first, or omit --skip-build.`);
 	}
@@ -348,6 +417,8 @@ function main() {
 	};
 	mkdirSync(paths.stageRoot, { recursive: true });
 	mkdirSync(paths.tarballDirectory, { recursive: true });
+
+	verifyExternalUpstreamPackagesAreUnmodified(repoRoot);
 
 	if (!options.skipBuild) {
 		run("npm", ["run", "build:offline"], { cwd: repoRoot });

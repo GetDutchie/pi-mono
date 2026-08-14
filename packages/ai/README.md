@@ -1891,8 +1891,19 @@ The Dutchie cut script currently stages and publishes these packages together:
 - `@getdutchie/pi-ai`
 - `@getdutchie/pi-tui`
 - `@getdutchie/pi-agent-core`
-- `@getdutchie/pi-storage-sqlite-node`
+- `@getdutchie/pi-session-backend-sqlite-node` (renamed upstream from `pi-storage-sqlite-node`)
 - `@getdutchie/pi-coding-agent`
+
+Some workspace packages are deliberately NOT rescoped, because the fork does not
+modify them and none of them depends on `pi-ai`: `@earendil-works/pi-telemetry`,
+`@earendil-works/pi-client` and `@earendil-works/pi-protocol` resolve from public
+npm at the same version. The script proves this rather than assuming it. Before
+staging it fails the cut if any of those directories differs from `upstream/main`,
+and while staging it fails on any `@earendil-works/*` specifier that is neither
+rescoped nor on that list. An upstream merge that adds a new workspace dependency
+therefore breaks the release loudly instead of silently shipping upstream code in
+a Dutchie cut. Keep `git fetch upstream` current or the first check downgrades to
+a warning.
 
 It also removes the upstream `packages/coding-agent/npm-shrinkwrap.json` from the
 staged private package. That shrinkwrap pins public `@earendil-works/*` tarballs;
