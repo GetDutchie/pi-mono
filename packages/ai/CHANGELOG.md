@@ -11,6 +11,13 @@
 - Added Fireworks batch support via its account-scoped datasets + `batchInferenceJobs` control plane (50% off serverless, plus automatic prompt caching). Requires `FIREWORKS_ACCOUNT_ID` alongside `FIREWORKS_API_KEY`; Fireworks is OpenAI/Anthropic-compatible for synchronous inference only, so batch could not reuse either existing transport.
 - Requesting batch execution from a provider with no batch transport now rejects with `NotBatchableError`. Batch is a pricing decision, so it is never emulated by running the items as individual realtime calls, and a batch id is always a real provider-side job id.
 
+### Fixed
+
+- Fixed strict tool schemas being sent with keywords that provider strict modes reject. `minLength`, `maxLength`, `pattern`, `format`, `minimum`, `maximum`, `multipleOf`, `minItems`, `maxItems` and `uniqueItems` are now stripped from the wire schema, where they previously caused the whole constrained-sampling request to be refused. They remain enforced post-hoc by original-schema validation.
+- Fixed tools with reused sub-schemas dropping out of constrained sampling. `$ref` and `$defs` are supported by provider strict modes and are emitted by TypeBox for any reused sub-schema, so they are now strictified rather than rejected, including each entry of the definition pool. `oneOf` is rewritten to the equivalent `anyOf`, and object branches inside a union are strictified instead of disqualifying the tool.
+- Fixed Anthropic strict tool schemas being rewritten into the OpenAI-family shape. Anthropic tools now go through Anthropic's own strict-schema transformer, which is authoritative for their grammar compiler and supports genuinely optional properties, so those tools no longer have to express absence as `null`.
+- Fixed the inbound half of the strict-mode nullable-optional bargain not resolving references. `validateToolArguments` now resolves local `$ref` pointers before deciding whether a `null` is a strict-mode placeholder or a value the schema permits, and walks `allOf`/`anyOf`/`oneOf` branches. Guessing structurally discarded legitimate nulls for properties whose definition is nullable; skipping `$ref` properties left placeholder nulls in place and failed the call. Unresolvable references, including external URLs and cycles, preserve the null.
+
 ## [0.84.2] - 2026-08-14
 
 ### Added

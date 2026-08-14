@@ -134,12 +134,15 @@ describe("constrained tool sampling", () => {
 			additionalProperties: false,
 			required: ["path", "offset", "metadata", "nullable"],
 			properties: {
-				offset: { anyOf: [{ type: "number" }, { type: "null" }] },
+				// A plainly-typed optional becomes a nullable type union, which is the
+				// form OpenAI's strict-mode documentation uses.
+				offset: { type: ["number", "null"] },
 				metadata: {
 					additionalProperties: false,
 					required: ["enabled"],
-					properties: { enabled: { anyOf: [{ type: "boolean" }, { type: "null" }] } },
+					properties: { enabled: { type: ["boolean", "null"] } },
 				},
+				// An optional that already admits null is left alone.
 				nullable: { anyOf: [{ type: "string" }, { type: "null" }] },
 			},
 		});
@@ -152,22 +155,24 @@ describe("constrained tool sampling", () => {
 				error: "additionalProperties is unsupported",
 			},
 			{
+				// An Intersect root is an allOf composition with no type of its own,
+				// so it is rejected as a non-object root before allOf is even reached.
 				parameters: Type.Intersect([Type.Object({ a: Type.String() }), Type.Object({ b: Type.Number() })]),
-				error: "allOf schemas are unsupported",
+				error: 'a root schema without type "object"',
+			},
+			{
+				parameters: Type.Object({ merged: Type.Intersect([Type.Object({ a: Type.String() })]) }),
+				error: "allOf is unsupported",
+			},
+			{
+				parameters: Type.Object({ pairs: Type.Tuple([Type.String(), Type.Number()]) }),
+				error: "tuple items is unsupported",
 			},
 			{
 				parameters: Type.Object({
-					value: Type.Union([Type.Object({ nested: Type.String() }), Type.Null()]),
+					guarded: { not: { type: "string" } } as unknown as ReturnType<typeof Type.String>,
 				}),
-				error: "object and array unions are unsupported",
-			},
-			{
-				parameters: {
-					type: "object",
-					properties: { child: { $ref: "https://example.com/child.json" } },
-					required: ["child"],
-				} as Tool["parameters"],
-				error: "$ref schemas are unsupported",
+				error: "not is unsupported",
 			},
 		];
 
@@ -188,6 +193,97 @@ describe("constrained tool sampling", () => {
 			tool.constrainedSampling = { type: "json_schema", strict: "require" };
 			expect(() => resolveJsonSchemaStrictSampling(tool, true)).toThrow(error);
 		}
+	});
+
+	it("strips validation keywords a strict request would be rejected for", () => {
+		// OpenAI strict mode rejects these outright, so leaving them in the wire
+		// schema turns constrained sampling into a hard request failure. They stay
+		// enforced post-hoc by original-schema validation.
+		const parameters = Type.Object({
+			name: Type.String({ minLength: 1, maxLength: 8, pattern: "^[a-z]+$", format: "email" }),
+			count: Type.Number({ minimum: 0, maximum: 10, multipleOf: 2 }),
+			tags: Type.Array(Type.String(), { minItems: 1, maxItems: 3, uniqueItems: true }),
+		});
+
+		const strict = JSON.stringify(makeStrictJsonSchema(parameters));
+
+		for (const keyword of [
+			"minLength",
+			"maxLength",
+			"pattern",
+			"format",
+			"minimum",
+			"maximum",
+			"multipleOf",
+			"minItems",
+			"maxItems",
+			"uniqueItems",
+		]) {
+			expect(strict).not.toContain(keyword);
+		}
+		// The original tool definition is untouched.
+		expect(JSON.stringify(parameters)).toContain("minLength");
+	});
+
+	it("keeps reused sub-schemas strict via $defs instead of falling back", () => {
+		// TypeBox emits $ref/$defs for any reused sub-schema, so refusing them
+		// would drop such tools out of constrained sampling entirely.
+		const Inner = Type.Object({ a: Type.String(), b: Type.Optional(Type.Number()) }, { $id: "Inner" });
+		const parameters = {
+			type: "object",
+			properties: { first: { $ref: "#/$defs/Inner" }, second: { $ref: "#/$defs/Inner" } },
+			required: ["first"],
+			$defs: { Inner },
+		} as unknown as Tool["parameters"];
+
+		const strict = makeStrictJsonSchema(parameters) as Record<string, any>;
+
+		expect(strict.required).toEqual(["first", "second"]);
+		// An optional $ref property gets a null escape so the model can say "absent".
+		expect(strict.properties.second).toEqual({ anyOf: [{ $ref: "#/$defs/Inner" }, { type: "null" }] });
+		// The definition pool is a map of schemas, and each entry must itself be strict.
+		expect(strict.$defs.Inner).toMatchObject({
+			additionalProperties: false,
+			required: ["a", "b"],
+			properties: { b: { type: ["number", "null"] } },
+		});
+	});
+
+	it("rewrites oneOf to anyOf and keeps object unions strict", () => {
+		const parameters = {
+			type: "object",
+			properties: {
+				choice: { oneOf: [{ type: "string" }, { type: "number" }] },
+				shape: { anyOf: [{ type: "object", properties: { nested: { type: "string" } } }, { type: "null" }] },
+			},
+			required: ["choice", "shape"],
+		} as unknown as Tool["parameters"];
+
+		const strict = makeStrictJsonSchema(parameters) as Record<string, any>;
+
+		// Strict mode understands anyOf but not oneOf.
+		expect(strict.properties.choice).toEqual({ anyOf: [{ type: "string" }, { type: "number" }] });
+		expect(JSON.stringify(strict)).not.toContain("oneOf");
+		// Object branches inside a union are strictified rather than rejected.
+		expect(strict.properties.shape.anyOf[0]).toMatchObject({ additionalProperties: false, required: ["nested"] });
+	});
+
+	it("uses Anthropic's own transformer for the anthropic dialect", () => {
+		const parameters = Type.Object({ path: Type.String({ minLength: 1 }), offset: Type.Optional(Type.Number()) });
+
+		const anthropic = makeStrictJsonSchema(parameters, "anthropic") as Record<string, any>;
+
+		expect(anthropic.additionalProperties).toBe(false);
+		// Anthropic's transformer preserves unsupported keywords by moving them
+		// into the description rather than dropping them silently.
+		expect(JSON.stringify(anthropic)).not.toContain('"minLength"');
+		// A probe must use the same dialect it will produce with.
+		const tool: Tool = {
+			...makeTool(),
+			parameters,
+			constrainedSampling: { type: "json_schema", strict: "require" },
+		};
+		expect(resolveJsonSchemaStrictSampling(tool, true, "anthropic")).toBe(true);
 	});
 
 	it("replays grammar calls as custom Responses items", () => {

@@ -15,6 +15,11 @@ interface JsonSchemaObject {
 	allOf?: JsonSchemaObject[];
 	anyOf?: JsonSchemaObject[];
 	oneOf?: JsonSchemaObject[];
+	$ref?: string;
+	$defs?: Record<string, JsonSchemaObject>;
+	definitions?: Record<string, JsonSchemaObject>;
+	const?: unknown;
+	enum?: unknown[];
 }
 
 function getSchemaTypes(schema: JsonSchemaObject): string[] {
@@ -237,34 +242,137 @@ function coerceWithJsonSchema(value: unknown, schema: JsonSchemaObject): unknown
 	return nextValue;
 }
 
-function normalizeOptionalNulls(value: unknown, schema: JsonSchemaObject): void {
+/**
+ * Strict-mode tool schemas (see utils/strict-tool-schema.ts) cannot express
+ * "optional": every property must appear in `required`, so previously-optional
+ * ones are made nullable and the model emits `null` to mean "absent". This is
+ * the inbound half of that bargain: drop those placeholder nulls before the
+ * arguments are validated against the ORIGINAL schema, where the property is
+ * optional and non-nullable.
+ *
+ * The hard case is `$ref`. Whether a `null` is a placeholder or a value the
+ * schema genuinely permits lives at the far end of the reference, so this
+ * RESOLVES local references before deciding. Guessing structurally would
+ * delete legitimate nulls for properties whose `$def` is nullable; refusing to
+ * strip `$ref` properties at all would leave placeholder nulls in place and
+ * fail the call. References that cannot be resolved (external URLs, unknown
+ * pointers, cycles) are treated as nullable, i.e. the null is preserved.
+ *
+ * Stripping is safe even for tools that were never strictified: a `null` for an
+ * optional property that does not admit null would have failed validation
+ * anyway, so treating it as an omission is strictly an improvement.
+ */
+function unescapeJsonPointerSegment(segment: string): string {
+	return segment.replace(/~1/g, "/").replace(/~0/g, "~");
+}
+
+/** Follow a local `$ref` chain to the schema it names, or undefined if it cannot be resolved. */
+function resolveSchemaRef(root: JsonSchemaObject, schema: JsonSchemaObject | undefined): JsonSchemaObject | undefined {
+	let current = schema;
+	const seen = new Set<string>();
+	while (current && typeof current.$ref === "string") {
+		const ref = current.$ref;
+		if (seen.has(ref)) return undefined;
+		seen.add(ref);
+
+		const match = /^#\/(\$defs|definitions)\/(.+)$/.exec(ref);
+		if (!match) return undefined;
+		const pool = match[1] === "$defs" ? root.$defs : root.definitions;
+		const target = pool?.[unescapeJsonPointerSegment(match[2])];
+		if (!target || typeof target !== "object") return undefined;
+		current = target;
+	}
+	return current;
+}
+
+function schemaAllowsNull(
+	root: JsonSchemaObject,
+	schema: JsonSchemaObject | undefined,
+	visited: Set<JsonSchemaObject> = new Set(),
+): boolean {
+	const resolved = resolveSchemaRef(root, schema);
+	// An absent or unresolvable schema tells us nothing, so keep the null.
+	if (!resolved) return true;
+	if (visited.has(resolved)) return true;
+	visited.add(resolved);
+
+	const type = resolved.type;
+	if (type === "null") return true;
+	if (Array.isArray(type) && type.includes("null")) return true;
+	if ("const" in resolved && resolved.const === null) return true;
+	if (Array.isArray(resolved.enum) && resolved.enum.includes(null)) return true;
+
+	for (const union of [resolved.anyOf, resolved.oneOf]) {
+		if (Array.isArray(union) && union.some((member) => schemaAllowsNull(root, member, visited))) return true;
+	}
+	// `null` must satisfy every allOf branch to be admissible.
+	if (Array.isArray(resolved.allOf) && resolved.allOf.length > 0) {
+		return resolved.allOf.every((member) => schemaAllowsNull(root, member, visited));
+	}
+	return false;
+}
+
+interface ObjectSchemaView {
+	props: Record<string, JsonSchemaObject>;
+	required: Set<string>;
+}
+
+/**
+ * Every object-shaped view of a schema: the node itself plus any object
+ * branches under allOf/anyOf/oneOf. The strictifier recurses into compositions,
+ * so its placeholder nulls can appear inside them too.
+ */
+function collectObjectViews(root: JsonSchemaObject, schema: JsonSchemaObject | undefined): ObjectSchemaView[] {
+	const views: ObjectSchemaView[] = [];
+	const visited = new Set<JsonSchemaObject>();
+	const visit = (node: JsonSchemaObject | undefined): void => {
+		const resolved = resolveSchemaRef(root, node);
+		if (!resolved || visited.has(resolved)) return;
+		visited.add(resolved);
+		if (resolved.properties && typeof resolved.properties === "object") {
+			views.push({
+				props: resolved.properties,
+				required: new Set(Array.isArray(resolved.required) ? resolved.required : []),
+			});
+		}
+		for (const union of [resolved.allOf, resolved.anyOf, resolved.oneOf]) {
+			if (Array.isArray(union)) for (const member of union) visit(member);
+		}
+	};
+	visit(schema);
+	return views;
+}
+
+function stripStrictModeNulls(root: JsonSchemaObject, value: unknown, schema: JsonSchemaObject | undefined): void {
+	if (value === null || typeof value !== "object") return;
+	const resolved = resolveSchemaRef(root, schema);
+	if (!resolved) return;
+
 	if (Array.isArray(value)) {
-		if (Array.isArray(schema.items)) {
-			for (let index = 0; index < value.length; index++) {
-				const itemSchema = schema.items[index];
-				if (itemSchema) normalizeOptionalNulls(value[index], itemSchema);
-			}
-		} else if (schema.items) {
-			for (const item of value) normalizeOptionalNulls(item, schema.items);
+		const items = resolved.items;
+		if (Array.isArray(items)) {
+			for (const [index, entry] of value.entries()) stripStrictModeNulls(root, entry, items[index]);
+		} else if (items) {
+			for (const entry of value) stripStrictModeNulls(root, entry, items);
 		}
 		return;
 	}
-	if (typeof value !== "object" || value === null || !schema.properties) return;
 
+	const views = collectObjectViews(root, resolved);
+	if (views.length === 0) return;
 	const object = value as Record<string, unknown>;
-	const required = new Set(schema.required ?? []);
-	for (const [key, propertySchema] of Object.entries(schema.properties)) {
-		if (!(key in object)) continue;
-		if (
-			object[key] === null &&
-			!required.has(key) &&
-			typeof (propertySchema as { $ref?: unknown }).$ref !== "string" &&
-			getSubSchemaValidator(propertySchema)?.Check(null) === false
-		) {
-			delete object[key];
-		} else {
-			normalizeOptionalNulls(object[key], propertySchema);
+	for (const key of Object.keys(object)) {
+		const mentioned = views.filter((view) => key in view.props);
+		if (mentioned.length === 0) continue;
+		if (object[key] === null) {
+			// Strip only when NO view requires the key and NO view admits null for
+			// it, i.e. the null is unambiguously a strict-mode placeholder.
+			const anyRequires = views.some((view) => view.required.has(key));
+			const anyAllowsNull = mentioned.some((view) => schemaAllowsNull(root, view.props[key]));
+			if (!anyRequires && !anyAllowsNull) delete object[key];
+			continue;
 		}
+		for (const view of mentioned) stripStrictModeNulls(root, object[key], view.props[key]);
 	}
 }
 
@@ -316,7 +424,8 @@ export function validateToolCall(tools: Tool[], toolCall: ToolCall): any {
  */
 export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 	const args = structuredClone(toolCall.arguments);
-	normalizeOptionalNulls(args, tool.parameters as JsonSchemaObject);
+	const parameters = tool.parameters as JsonSchemaObject;
+	stripStrictModeNulls(parameters, args, parameters);
 	Value.Convert(tool.parameters, args);
 
 	const validator = getValidator(tool.parameters);

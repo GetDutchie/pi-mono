@@ -1356,8 +1356,11 @@ function convertTools(
 	if (!tools) return [];
 
 	return tools.map((tool, index) => {
-		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictTools);
-		const parameters = getJsonSchemaToolParameters(tool, strict);
+		// Anthropic strict tool use goes through Anthropic's own strict-schema
+		// transformer, which is authoritative for what their grammar compiler
+		// accepts. Probe and produce with the same dialect.
+		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictTools, "anthropic");
+		const parameters = getJsonSchemaToolParameters(tool, strict, "anthropic");
 		const schema = parameters as { properties?: unknown; required?: string[] };
 		const legacyInputSchema = {
 			type: "object" as const,

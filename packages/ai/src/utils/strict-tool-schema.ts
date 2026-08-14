@@ -22,6 +22,17 @@
  * relies on `additionalProperties`/`patternProperties` passthrough) — in
  * that case the caller sends the tool WITHOUT strict and the pre-existing
  * validate-and-reprompt loop remains that tool's enforcement.
+ *
+ * `toStrictToolSchema` is the same transform but throws
+ * `UnstrictifiableSchemaError` instead of returning `null`, so a tool that
+ * declares `constrainedSampling.strict: "require"` can report WHY strict mode
+ * was unavailable rather than silently degrading.
+ *
+ * `$ref`/`$defs` survive the transform: both OpenAI and Anthropic strict modes
+ * resolve local references, and TypeBox emits them for any reused sub-schema.
+ * Optional `$ref` properties are nullable-wrapped like any other, which is why
+ * the inbound null-stripper in `utils/validation.ts` must RESOLVE references
+ * before deciding whether a `null` is a strict-mode placeholder.
  */
 
 import { transformJSONSchema } from "@anthropic-ai/sdk/lib/transform-json-schema";
@@ -73,6 +84,39 @@ const UNSTRICTIFIABLE_KEYWORDS = new Set([
 
 class Unstrictifiable extends Error {}
 
+function unstrictifiableReason(error: Unstrictifiable): string {
+	return `${error.message} is unsupported in the strict schema subset`;
+}
+
+/**
+ * Failures that are not our own structural rejection (a provider SDK
+ * transformer throwing, malformed JSON) still mean "send this tool unstrict",
+ * but the reason is worth surfacing for `strict: "require"`.
+ */
+function describeFailure(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Tool parameters and structured-output schemas must be object schemas: every
+ * provider's strict surface rejects a bare primitive or array root.
+ */
+function assertObjectRoot(node: unknown): void {
+	if (node === null || typeof node !== "object" || Array.isArray(node)) {
+		throw new Unstrictifiable("a non-object root schema");
+	}
+	if ((node as Record<string, unknown>).type !== "object") {
+		throw new Unstrictifiable('a root schema without type "object"');
+	}
+}
+
+/**
+ * Thrown by the throwing transform variants when a schema cannot be expressed
+ * in a provider's strict subset. Callers that want per-tool fallback use the
+ * `null`-returning variants instead.
+ */
+export class UnstrictifiableSchemaError extends Error {}
+
 function transformNode(node: unknown): unknown {
 	if (node === null || typeof node !== "object") return node;
 	if (Array.isArray(node)) return node.map(transformNode);
@@ -111,7 +155,21 @@ function transformNode(node: unknown): unknown {
 			// admission-fails the whole request. Fall back to the reprompt loop.
 			throw new Unstrictifiable("allOf");
 		}
-		if (key === "items" || key === "anyOf" || key === "$defs" || key === "definitions") {
+		if (key === "$defs" || key === "definitions") {
+			// A definition pool is a MAP of schemas, not a schema. Strictify each
+			// entry: a $def reached through $ref must satisfy the strict subset
+			// too, or the provider rejects the whole schema.
+			if (value === null || typeof value !== "object" || Array.isArray(value)) {
+				throw new Unstrictifiable(`a non-object ${key} pool`);
+			}
+			const defs: Record<string, unknown> = {};
+			for (const [name, def] of Object.entries(value as Record<string, unknown>)) {
+				defs[name] = transformNode(def);
+			}
+			out[key] = defs;
+			continue;
+		}
+		if (key === "items" || key === "anyOf") {
 			out[key] = transformNode(value);
 			continue;
 		}
@@ -121,8 +179,9 @@ function transformNode(node: unknown): unknown {
 	// Object nodes: strict mode mandates additionalProperties:false and
 	// required = ALL keys. Previously-optional properties become nullable so
 	// the model can express absence; validateToolArguments strips those nulls.
-	if (out.type === "object" && out.properties !== null && typeof out.properties === "object") {
+	if (out.type === "object") {
 		out.additionalProperties = false;
+		if (out.properties === null || typeof out.properties !== "object") out.properties = {};
 		const props = out.properties as Record<string, unknown>;
 		const allKeys = Object.keys(props);
 		const origRequired = new Set(Array.isArray(out.required) ? (out.required as string[]) : []);
@@ -158,27 +217,48 @@ function makeNullable(prop: Record<string, unknown>): Record<string, unknown> {
 	return { anyOf: [prop, { type: "null" }] };
 }
 
-const strictCache = new WeakMap<object, Record<string, unknown> | null>();
+type StrictResult = { ok: Record<string, unknown> } | { reason: string };
+
+const strictCache = new WeakMap<object, StrictResult>();
+
+function computeStrict(schema: object): StrictResult {
+	try {
+		// JSON round-trip drops TypeBox symbol metadata providers reject.
+		const raw = JSON.parse(JSON.stringify(schema)) as unknown;
+		assertObjectRoot(raw);
+		return { ok: transformNode(raw) as Record<string, unknown> };
+	} catch (error) {
+		return { reason: error instanceof Unstrictifiable ? unstrictifiableReason(error) : describeFailure(error) };
+	}
+}
+
+/**
+ * Transform a tool parameter schema into the OpenAI strict-mode subset,
+ * throwing `UnstrictifiableSchemaError` when the schema cannot be expressed in
+ * it. Results (including failures) are cached per schema object identity.
+ */
+export function toStrictToolSchema(schema: object): Record<string, unknown> {
+	let result = strictCache.get(schema);
+	if (result === undefined) {
+		result = computeStrict(schema);
+		strictCache.set(schema, result);
+	}
+	if ("reason" in result) throw new UnstrictifiableSchemaError(result.reason);
+	return result.ok;
+}
 
 /**
  * Transform a tool parameter schema into the OpenAI strict-mode subset.
  * Returns `null` when the schema cannot be strictified — the caller must
  * then send the tool without strict mode (reprompt-loop enforcement).
- * Results are cached per schema object identity.
  */
 export function strictToolSchema(schema: object): Record<string, unknown> | null {
-	const cached = strictCache.get(schema);
-	if (cached !== undefined) return cached;
-	let result: Record<string, unknown> | null;
 	try {
-		// JSON round-trip drops TypeBox symbol metadata providers reject.
-		const raw = JSON.parse(JSON.stringify(schema)) as unknown;
-		result = transformNode(raw) as Record<string, unknown>;
-	} catch {
-		result = null;
+		return toStrictToolSchema(schema);
+	} catch (error) {
+		if (error instanceof UnstrictifiableSchemaError) return null;
+		throw error;
 	}
-	strictCache.set(schema, result);
-	return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,25 +296,44 @@ function assertAnthropicStrictifiable(node: unknown): void {
 	}
 }
 
-const anthropicStrictCache = new WeakMap<object, Record<string, unknown> | null>();
+const anthropicStrictCache = new WeakMap<object, StrictResult>();
+
+function computeAnthropicStrict(schema: object): StrictResult {
+	try {
+		const raw = JSON.parse(JSON.stringify(schema)) as unknown;
+		assertObjectRoot(raw);
+		assertAnthropicStrictifiable(raw);
+		return { ok: transformJSONSchema(raw as Parameters<typeof transformJSONSchema>[0]) as Record<string, unknown> };
+	} catch (error) {
+		return { reason: error instanceof Unstrictifiable ? unstrictifiableReason(error) : describeFailure(error) };
+	}
+}
+
+/**
+ * Transform a tool parameter schema into Anthropic's strict-tool-use shape,
+ * throwing `UnstrictifiableSchemaError` when the schema cannot be expressed in
+ * it. Results (including failures) are cached per schema object identity.
+ */
+export function toAnthropicStrictToolSchema(schema: object): Record<string, unknown> {
+	let result = anthropicStrictCache.get(schema);
+	if (result === undefined) {
+		result = computeAnthropicStrict(schema);
+		anthropicStrictCache.set(schema, result);
+	}
+	if ("reason" in result) throw new UnstrictifiableSchemaError(result.reason);
+	return result.ok;
+}
 
 /**
  * Transform a tool parameter schema into Anthropic's strict-tool-use shape.
  * Returns `null` when the schema cannot be strictified — that tool is sent
- * without strict and keeps the reprompt loop. Results are cached per schema
- * object identity.
+ * without strict and keeps the reprompt loop.
  */
 export function anthropicStrictToolSchema(schema: object): Record<string, unknown> | null {
-	const cached = anthropicStrictCache.get(schema);
-	if (cached !== undefined) return cached;
-	let result: Record<string, unknown> | null;
 	try {
-		const raw = JSON.parse(JSON.stringify(schema)) as unknown;
-		assertAnthropicStrictifiable(raw);
-		result = transformJSONSchema(raw as Parameters<typeof transformJSONSchema>[0]) as Record<string, unknown>;
-	} catch {
-		result = null;
+		return toAnthropicStrictToolSchema(schema);
+	} catch (error) {
+		if (error instanceof UnstrictifiableSchemaError) return null;
+		throw error;
 	}
-	anthropicStrictCache.set(schema, result);
-	return result;
 }

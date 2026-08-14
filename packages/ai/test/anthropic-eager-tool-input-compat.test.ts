@@ -156,10 +156,15 @@ describe("Anthropic eager tool input streaming compatibility", () => {
 
 		const strictRequest = await captureAnthropicRequest({ supportsStrictTools: true }, createContext([strictTool]));
 		expect(getFirstTool(strictRequest.body).strict).toBe(true);
+		// Anthropic strict tool use goes through Anthropic's own strict-schema
+		// transformer, which supports genuinely optional properties: it closes the
+		// object but leaves `required` alone. Only the OpenAI-family subset needs
+		// every property required with optionals expressed as nullable, so an
+		// Anthropic tool never has to emit null placeholders.
 		expect(getFirstToolInputSchema(strictRequest.body)).toMatchObject({
 			additionalProperties: false,
-			required: ["value", "optional"],
-			properties: { optional: { anyOf: [{ type: "number" }, { type: "null" }] } },
+			required: ["value"],
+			properties: { optional: { type: "number" } },
 			title: "StrictLookupInput",
 		});
 	});

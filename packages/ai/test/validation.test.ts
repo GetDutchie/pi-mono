@@ -143,6 +143,94 @@ describe("validateToolArguments", () => {
 		expect(validateToolArguments(tool, toolCall)).toEqual({ value: null });
 	});
 
+	it("treats an optional null as omission when the reference resolves non-nullable", () => {
+		// The strictifier nullable-wraps optional $ref properties, so the model may
+		// answer null for one whose $def does not admit null. Deciding this needs
+		// the reference RESOLVED; skipping $ref properties would leave the
+		// placeholder in place and fail the call.
+		const tool: Tool = {
+			name: "echo",
+			description: "Echo tool",
+			parameters: {
+				type: "object",
+				properties: { value: { $ref: "#/$defs/value" } },
+				required: [],
+				$defs: { value: { type: "number" } },
+			} as Tool["parameters"],
+		};
+		const toolCall: ToolCall = {
+			type: "toolCall",
+			id: "tool-1",
+			name: "echo",
+			arguments: { value: null },
+		};
+
+		expect(validateToolArguments(tool, toolCall)).toEqual({});
+	});
+
+	it("resolves references through definitions and escaped pointer segments", () => {
+		const tool: Tool = {
+			name: "echo",
+			description: "Echo tool",
+			parameters: {
+				type: "object",
+				properties: { value: { $ref: "#/definitions/a~1b" } },
+				required: [],
+				definitions: { "a/b": { type: "number" } },
+			} as Tool["parameters"],
+		};
+		const toolCall: ToolCall = {
+			type: "toolCall",
+			id: "tool-1",
+			name: "echo",
+			arguments: { value: null },
+		};
+
+		expect(validateToolArguments(tool, toolCall)).toEqual({});
+	});
+
+	it("terminates on a self-referencing definition", () => {
+		const tool: Tool = {
+			name: "echo",
+			description: "Echo tool",
+			parameters: {
+				type: "object",
+				properties: { node: { $ref: "#/$defs/node" } },
+				required: [],
+				$defs: {
+					node: { type: "object", properties: { next: { $ref: "#/$defs/node" } } },
+				},
+			} as Tool["parameters"],
+		};
+		const toolCall: ToolCall = {
+			type: "toolCall",
+			id: "tool-1",
+			name: "echo",
+			arguments: { node: { next: null } },
+		};
+
+		expect(validateToolArguments(tool, toolCall)).toEqual({ node: {} });
+	});
+
+	it("strips an optional null inside a composed object branch", () => {
+		const tool: Tool = {
+			name: "echo",
+			description: "Echo tool",
+			parameters: {
+				type: "object",
+				anyOf: [{ type: "object", properties: { a: { type: "string" } }, required: [] }],
+			} as Tool["parameters"],
+		};
+		const toolCall: ToolCall = {
+			type: "toolCall",
+			id: "tool-1",
+			name: "echo",
+			arguments: { a: null },
+		};
+
+		expect(validateToolArguments(tool, toolCall)).toEqual({});
+	});
+
 	it("preserves a value that already matches a nullable union arm", () => {
 		const tool: Tool = {
 			name: "echo",
