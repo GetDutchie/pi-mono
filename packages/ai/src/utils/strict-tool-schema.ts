@@ -98,8 +98,9 @@ function describeFailure(error: unknown): string {
 }
 
 /**
- * Tool parameters and structured-output schemas must be object schemas: every
- * provider's strict surface rejects a bare primitive or array root.
+ * Tool parameters and OpenAI-family structured output must be object schemas:
+ * OpenAI's strict subset rejects a bare primitive, array or union root, and an
+ * Anthropic tool's `input_schema` must be an object too.
  */
 function assertObjectRoot(node: unknown): void {
 	if (node === null || typeof node !== "object" || Array.isArray(node)) {
@@ -363,7 +364,14 @@ const anthropicStrictCache = new WeakMap<object, StrictResult>();
 function computeAnthropicStrict(schema: object): StrictResult {
 	try {
 		const raw = JSON.parse(JSON.stringify(schema)) as unknown;
-		assertObjectRoot(raw);
+		if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+			throw new Unstrictifiable("a non-object root schema");
+		}
+		// No root `type: "object"` requirement here. Anthropic's transformer
+		// handles a root union, and `output_config` accepts one, so demanding an
+		// object root would push structured-output callers onto their raw-schema
+		// fallback and send an UNtransformed union. Tool parameters do need an
+		// object root, and makeStrictJsonSchema enforces that for them.
 		assertResolvableLocalRefs(raw as Record<string, unknown>);
 		assertAnthropicStrictifiable(raw);
 		return { ok: transformJSONSchema(raw as Parameters<typeof transformJSONSchema>[0]) as Record<string, unknown> };

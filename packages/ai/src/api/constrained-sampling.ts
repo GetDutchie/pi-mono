@@ -39,6 +39,14 @@ export function makeStrictJsonSchema(
 	if (!isJsonSchemaObject(schema)) {
 		throw new UnsupportedStrictJsonSchemaError("root schema must have type object");
 	}
+	// Tool parameters specifically must have an object root, in every dialect: a
+	// root union has no `properties` for a provider to build a grammar from, and
+	// Anthropic's input_schema is required to be an object. This lives here and
+	// not in the transforms because the transforms are shared with structured
+	// output, where Anthropic does accept a root union.
+	if (schema.type !== "object") {
+		throw new UnsupportedStrictJsonSchemaError("root schema must have type object");
+	}
 	try {
 		return dialect === "anthropic" ? toAnthropicStrictToolSchema(schema) : toStrictToolSchema(schema);
 	} catch (error) {

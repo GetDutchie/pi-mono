@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import {
 	appendGrammarToolInputJsonDelta,
+	getJsonSchemaToolParameters,
 	makeStrictJsonSchema,
 	resolveJsonSchemaStrictSampling,
 } from "../src/api/constrained-sampling.ts";
@@ -13,6 +14,7 @@ import {
 } from "../src/api/openai-responses-shared.ts";
 import type { AssistantMessage, Context, Model, Tool, ToolCall } from "../src/types.ts";
 import { AssistantMessageEventStream } from "../src/utils/event-stream.ts";
+import { anthropicStrictToolSchema, strictToolSchema } from "../src/utils/strict-tool-schema.ts";
 
 function makeModel(): Model<"openai-responses"> {
 	return {
@@ -155,10 +157,10 @@ describe("constrained tool sampling", () => {
 				error: "additionalProperties is unsupported",
 			},
 			{
-				// An Intersect root is an allOf composition with no type of its own,
-				// so it is rejected as a non-object root before allOf is even reached.
+				// An Intersect root is an allOf composition with no type of its own, and
+				// tool parameters must have an object root in every dialect.
 				parameters: Type.Intersect([Type.Object({ a: Type.String() }), Type.Object({ b: Type.Number() })]),
-				error: 'a root schema without type "object"',
+				error: "root schema must have type object",
 			},
 			{
 				parameters: Type.Object({ merged: Type.Intersect([Type.Object({ a: Type.String() })]) }),
@@ -327,6 +329,38 @@ describe("constrained tool sampling", () => {
 			$defs: { I: { type: "object", properties: { v: { type: "string" } }, required: ["v"] } },
 		} as unknown as Tool["parameters"];
 		expect(() => makeStrictJsonSchema(shared)).not.toThrow();
+	});
+
+	it("requires an object root for tool parameters but not for Anthropic structured output", () => {
+		const rootUnion = {
+			anyOf: [
+				{ type: "object", properties: { a: { type: "string" } }, required: ["a"] },
+				{ type: "object", properties: { b: { type: "number" } }, required: [] },
+			],
+		} as unknown as Tool["parameters"];
+
+		// Tool parameters: a root union has no `properties` to build a grammar from,
+		// and Anthropic's input_schema must be an object, so both dialects degrade.
+		for (const dialect of ["openai", "anthropic"] as const) {
+			expect(() => makeStrictJsonSchema(rootUnion, dialect)).toThrow("root schema must have type object");
+			const tool: Tool = {
+				...makeTool(),
+				parameters: rootUnion,
+				constrainedSampling: { type: "json_schema", strict: "prefer" },
+			};
+			expect(resolveJsonSchemaStrictSampling(tool, true, dialect)).toBeUndefined();
+			expect(getJsonSchemaToolParameters(tool, undefined, dialect)).toBe(rootUnion);
+		}
+
+		// Structured output is a different surface: Anthropic's own transformer
+		// handles a root union and output_config accepts one, so requiring an object
+		// root there would push callers onto their raw-schema fallback and send an
+		// UNtransformed union with open object branches.
+		const anthropicOutput = anthropicStrictToolSchema(rootUnion as object) as Record<string, any>;
+		expect(anthropicOutput).not.toBeNull();
+		expect(anthropicOutput.anyOf[0].additionalProperties).toBe(false);
+		// The OpenAI-family strict subset does require an object root.
+		expect(strictToolSchema(rootUnion as object)).toBeNull();
 	});
 
 	it("uses Anthropic's own transformer for the anthropic dialect", () => {
