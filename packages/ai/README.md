@@ -648,6 +648,7 @@ for await (const event of s) {
 ```
 
 **Important notes about partial tool arguments:**
+
 - During `toolcall_delta` events, `arguments` contains the best-effort parse of partial JSON
 - Fields may be missing or incomplete - always check for existence before use
 - String values may be truncated mid-word
@@ -1458,6 +1459,7 @@ console.log(faux.state.callCount);
 ```
 
 Notes:
+
 - Responses are consumed from a queue in request start order.
 - If the queue is empty, the faux provider returns an assistant error message with `errorMessage: "No more faux responses queued"`.
 - Use `faux.setResponses([...])` to replace the remaining queue and `faux.appendResponses([...])` to add more responses.
@@ -1849,98 +1851,94 @@ Add an entry to `packages/ai/CHANGELOG.md` under `## [Unreleased]`:
 - Added support for [Provider Name] provider ([#PR](link) by [@author](link))
 ```
 
-## Publishing a @getdutchie/pi-ai dutchie cut
+## Publishing @getdutchie dutchie cuts
 
-The GetDutchie fork (`GetDutchie/pi-mono`) periodically publishes a private, rescoped
-build of this package to the GitHub Packages registry so downstream Dutchie apps can
-consume in-flight fixes before they land in the upstream `@earendil-works/pi-ai` npm
-release. This is a **manual, local, non-committed** cut — there is no `scripts/dutchie-*`
-automation in this repo today. `scripts/publish.mjs` publishes the lockstep
-`@earendil-works/*` packages to public npm and is unrelated to this flow.
+The GetDutchie fork (`GetDutchie/pi-mono`) periodically publishes private,
+rescoped builds to GitHub Packages so downstream Dutchie apps can consume
+in-flight fixes before they land in upstream `@earendil-works/*` releases.
+Use `scripts/publish-dutchie-cut.mjs` for these cuts; `scripts/publish.mjs`
+publishes the lockstep `@earendil-works/*` packages to public npm and is
+unrelated to this flow.
+
+Do **not** manually edit only a package's `name` before publishing. The monorepo
+source intentionally keeps upstream specifiers like `@earendil-works/pi-ai` so
+workspace resolution works against the local fork. A private cut must rescope the
+published artifact as a unit: package names, internal dependency declarations,
+and built import/type specifiers all need to change to `@getdutchie/*`. If only
+`package.json.name` changes, consumers install upstream dependencies while the
+forked `dist` may import fork-only APIs (for example `NotBatchableError` from
+`pi-ai`), producing either a hard ESM import crash or a silent behavior mismatch.
+
+The Dutchie cut script currently stages and publishes these packages together:
+
+- `@getdutchie/pi-ai`
+- `@getdutchie/pi-tui`
+- `@getdutchie/pi-agent-core`
+- `@getdutchie/pi-storage-sqlite-node`
+- `@getdutchie/pi-coding-agent`
+
+It also removes the upstream `packages/coding-agent/npm-shrinkwrap.json` from the
+staged private package. That shrinkwrap pins public `@earendil-works/*` tarballs;
+shipping it in a rescoped package would override the rewritten dependencies and
+recreate the original bug.
 
 **Registry auth** — VERIFIED 2026-07-16 (cutting dutchie.11): the plain
 `~/.npmrc` `//npm.pkg.github.com/:_authToken` is typically a READ-ONLY
 (`read:packages`) token — publishing with it fails `403 Forbidden ... token
 does not match expected scopes`. Use a token WITH `write:packages`. The
-`gh` CLI keyring token has it (`gh auth status` shows
-`write:packages`), so the reliable publish auth is to override with
-`gh auth token` at publish time (see the cut procedure below) rather than
-relying on the `.npmrc` token. `~/.npmrc` still needs the registry mapping:
+`gh` CLI keyring token has it (`gh auth status` shows `write:packages`), and
+the script passes `gh auth token` to `npm publish` for GitHub Packages. `~/.npmrc`
+still needs the registry mapping for installs:
 
 ```
 @getdutchie:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=<a GitHub PAT with read:packages (for install); publish uses gh auth token, see below>
+//npm.pkg.github.com/:_authToken=<a GitHub PAT with read:packages for install>
 ```
 
 **Version history** — dutchie cuts are published as npm prereleases of the form
-`<upstream-version>-dutchie.<N>`, sequential per upstream version. As of this writing:
+`<upstream-version>-dutchie.<N>`, sequential per upstream version. Check the
+current max `N` for every package before picking the next one; **never reuse a
+version string**.
 
 ```bash
 npm view @getdutchie/pi-ai versions --registry=https://npm.pkg.github.com
-# [ '0.80.3-dutchie.1', '0.80.6-dutchie.1', ..., '0.80.6-dutchie.9', '0.80.6-dutchie.10' ]
+npm view @getdutchie/pi-coding-agent versions --registry=https://npm.pkg.github.com
+npm view @getdutchie/pi-agent-core versions --registry=https://npm.pkg.github.com
+npm view @getdutchie/pi-tui versions --registry=https://npm.pkg.github.com
 ```
 
-`dutchie.8` is missing from the published history (a skipped/failed publish attempt) —
-treat gaps as normal, not as a sign something is broken. Always check the current max `N`
-for the upstream version you're cutting before picking the next one; **never reuse a
-version string** (npm publish will reject it, and reusing after an `npm unpublish` window
-is unsafe).
-
-**Cut procedure** (from a clean `main` checkout, after merging the fixes you want in the
-cut):
+**Dry-run and validate** (from a clean `main` checkout, after merging the fixes
+you want in the cut):
 
 ```bash
-# 1. Build the real package first — the cut publishes packages/ai/dist, and package.json
-#    exports point at it. NEVER hand-publish a stale/missing dist.
-npm run build
-
-# 2. Confirm the require condition is present on every exports subpath (regression guard
-#    that motivated packages/ai/test/exports-require-condition.test.ts — dutchie.9 had it
-#    on ./compat only, dutchie.10 dropped it repo-wide).
-cd packages/ai && npx vitest run test/exports-require-condition.test.ts && cd ../..
-
-# 3. Locally rescope + version-bump packages/ai/package.json for the cut only.
-#    Do NOT commit this edit — it's a local, throwaway publish-time mutation:
-#      "name": "@earendil-works/pi-ai"  ->  "name": "@getdutchie/pi-ai"
-#      "version": "0.80.6"              ->  "version": "0.80.6-dutchie.11"   (bump N)
-#    (NEEDS-OPERATOR-CONFIRMATION: whether workspace-internal deps on
-#    "@earendil-works/pi-ai" elsewhere in the monorepo need a matching temporary
-#    rescope/bump for `npm run build` to still resolve them during this step, or
-#    whether packages/ai builds standalone enough that this is a no-op.)
-
-# 4. Dry-run the pack to sanity-check contents before publishing for real:
-cd packages/ai
-npm pack --dry-run --ignore-scripts
-
-# 5. Publish the rescoped, bumped package to the GitHub Packages registry:
-npm publish --registry=https://npm.pkg.github.com --tag latest --ignore-scripts \
-  "--//npm.pkg.github.com/:_authToken=$(gh auth token)"
-# VERIFIED 2026-07-16 (dutchie.11):
-#  --tag latest     : prereleases (X-dutchie.N) REQUIRE an explicit --tag or npm
-#                     errors "must specify a tag"; prior cuts sit under `latest`.
-#  --ignore-scripts : publish the dist you built in step 1; skips prepublishOnly's
-#                     clean+rebuild (which would otherwise rebuild under the rescoped name).
-#  gh auth token    : supplies the write:packages token (the ~/.npmrc token is read-only).
-
-# 6. Discard the local rescope/bump — it must never land on main:
-cd ../.. && git checkout -- packages/ai/package.json
-git status --short   # must be clean before you walk away
+# Builds first unless --skip-build is supplied. The script stages into a temp dir,
+# rewrites @earendil-works/* -> @getdutchie/*, packs tarballs, installs them into
+# an isolated scratch project, runs npm ls, and imports @getdutchie/pi-coding-agent.
+node scripts/publish-dutchie-cut.mjs --version 0.82.1-dutchie.2
 ```
+
+**Publish** after the dry run passes:
+
+```bash
+node scripts/publish-dutchie-cut.mjs --version 0.82.1-dutchie.2 --publish
+```
+
+The script does not mutate tracked files. If you pass `--out`, it must point
+outside the repository; use `--force` to replace an existing output directory.
 
 **Verifying the cut** (from a downstream consumer, or a scratch directory):
 
 ```bash
-npm view @getdutchie/pi-ai@0.80.6-dutchie.11 --registry=https://npm.pkg.github.com
+npm view @getdutchie/pi-coding-agent@0.82.1-dutchie.2 --registry=https://npm.pkg.github.com
+npm install @getdutchie/pi-coding-agent@0.82.1-dutchie.2 --registry=https://npm.pkg.github.com --ignore-scripts
+node --input-type=module -e 'import("@getdutchie/pi-coding-agent").then(() => console.log("ok"))'
 ```
 
 NEEDS-OPERATOR-CONFIRMATION items still open:
-- Whether there's an intended CI job for this flow (a GitHub Actions workflow that
-  rescopes/bumps/publishes on a tag or manual dispatch) versus the fully manual flow
-  documented above — no such workflow exists in `.github/workflows/` as of this PR.
-- The exact policy for which upstream version a new dutchie cut should be based on when
-  `main` has moved past the last tagged `v0.80.6`-style release (cut from `main` HEAD, or
-  from a dedicated `dutchie-x.y.z` release branch like the one merged into `main` in this
-  consolidation?).
+
+- Whether this flow should move into a GitHub Actions workflow on tag or manual
+  dispatch. The local script is intentionally deterministic and non-mutating, but
+  there is still no committed CI publish job.
 - Token rotation/expiry policy for the `npm.pkg.github.com` PAT referenced above.
 
 ## License
