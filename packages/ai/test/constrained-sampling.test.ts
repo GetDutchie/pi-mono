@@ -268,6 +268,67 @@ describe("constrained tool sampling", () => {
 		expect(strict.properties.shape.anyOf[0]).toMatchObject({ additionalProperties: false, required: ["nested"] });
 	});
 
+	it("refuses strict for references a provider grammar compiler cannot resolve", () => {
+		// A provider only sees the document we send, so an external ref is
+		// unfetchable and a dangling pointer unresolvable. Recursive reference
+		// graphs are not accepted across the strict subsets we target, notably
+		// Amazon Bedrock, which has 72 strict-capable models. All three must
+		// degrade to an unstrict tool rather than 400 the whole request.
+		const cases: Array<{ label: string; parameters: Tool["parameters"]; error: string }> = [
+			{
+				label: "external",
+				parameters: {
+					type: "object",
+					properties: { child: { $ref: "https://example.com/child.json" } },
+					required: ["child"],
+				} as Tool["parameters"],
+				error: "a non-local $ref",
+			},
+			{
+				label: "dangling",
+				parameters: {
+					type: "object",
+					properties: { child: { $ref: "#/$defs/missing" } },
+					required: ["child"],
+				} as Tool["parameters"],
+				error: "an unresolvable $ref",
+			},
+			{
+				label: "recursive",
+				parameters: {
+					type: "object",
+					properties: { node: { $ref: "#/$defs/node" } },
+					required: ["node"],
+					$defs: { node: { type: "object", properties: { next: { $ref: "#/$defs/node" } }, required: [] } },
+				} as Tool["parameters"],
+				error: "a recursive $ref",
+			},
+		];
+
+		for (const { parameters, error } of cases) {
+			expect(() => makeStrictJsonSchema(parameters)).toThrow(error);
+			expect(() => makeStrictJsonSchema(parameters, "anthropic")).toThrow(error);
+			const tool: Tool = {
+				...makeTool(),
+				parameters,
+				constrainedSampling: { type: "json_schema", strict: "prefer" },
+			};
+			expect(resolveJsonSchemaStrictSampling(tool, true)).toBeUndefined();
+			tool.constrainedSampling = { type: "json_schema", strict: "require" };
+			expect(() => resolveJsonSchemaStrictSampling(tool, true)).toThrow(error);
+		}
+
+		// A shared, local, acyclic reference is the case worth supporting and must
+		// still strictify.
+		const shared = {
+			type: "object",
+			properties: { a: { $ref: "#/$defs/I" }, b: { $ref: "#/$defs/I" } },
+			required: ["a", "b"],
+			$defs: { I: { type: "object", properties: { v: { type: "string" } }, required: ["v"] } },
+		} as unknown as Tool["parameters"];
+		expect(() => makeStrictJsonSchema(shared)).not.toThrow();
+	});
+
 	it("uses Anthropic's own transformer for the anthropic dialect", () => {
 		const parameters = Type.Object({ path: Type.String({ minLength: 1 }), offset: Type.Optional(Type.Number()) });
 

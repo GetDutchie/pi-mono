@@ -231,6 +231,40 @@ describe("validateToolArguments", () => {
 		expect(validateToolArguments(tool, toolCall)).toEqual({});
 	});
 
+	it("strips a placeholder null that another union arm happens to require", () => {
+		// Union arms are mutually exclusive, so `required` must be judged per arm.
+		// Aggregating it across arms preserved the placeholder, and the surviving
+		// null was then coerced into a fabricated 0 rather than failing.
+		const tool: Tool = {
+			name: "echo",
+			description: "Echo tool",
+			parameters: {
+				type: "object",
+				properties: {
+					shape: {
+						anyOf: [
+							{ type: "object", properties: { x: { type: "number" } }, required: [] },
+							{
+								type: "object",
+								properties: { x: { type: "number" }, y: { type: "number" } },
+								required: ["x", "y"],
+							},
+						],
+					},
+				},
+				required: ["shape"],
+			} as Tool["parameters"],
+		};
+		const toolCall: ToolCall = {
+			type: "toolCall",
+			id: "tool-1",
+			name: "echo",
+			arguments: { shape: { x: null } },
+		};
+
+		expect(validateToolArguments(tool, toolCall)).toEqual({ shape: {} });
+	});
+
 	it("preserves a value that already matches a nullable union arm", () => {
 		const tool: Tool = {
 			name: "echo",

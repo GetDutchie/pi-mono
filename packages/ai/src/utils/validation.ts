@@ -365,11 +365,20 @@ function stripStrictModeNulls(root: JsonSchemaObject, value: unknown, schema: Js
 		const mentioned = views.filter((view) => key in view.props);
 		if (mentioned.length === 0) continue;
 		if (object[key] === null) {
-			// Strip only when NO view requires the key and NO view admits null for
-			// it, i.e. the null is unambiguously a strict-mode placeholder.
-			const anyRequires = views.some((view) => view.required.has(key));
-			const anyAllowsNull = mentioned.some((view) => schemaAllowsNull(root, view.props[key]));
-			if (!anyRequires && !anyAllowsNull) delete object[key];
+			// Decide per VIEW rather than by aggregating across union arms, which are
+			// mutually exclusive. A null is a placeholder if some view declares the
+			// property optional and non-nullable, and legitimate if any view admits
+			// null -- in which case keeping it can still validate. Aggregating
+			// `required` across arms preserved placeholders whenever ANOTHER arm
+			// happened to require the key, and the surviving null was then coerced
+			// downstream into a fabricated value (null -> 0 for a number), which is
+			// worse than any validation error. For a single view this is identical
+			// to deciding on that view's own `required`.
+			const admitsNull = mentioned.some((view) => schemaAllowsNull(root, view.props[key]));
+			const isPlaceholder = mentioned.some(
+				(view) => !view.required.has(key) && !schemaAllowsNull(root, view.props[key]),
+			);
+			if (isPlaceholder && !admitsNull) delete object[key];
 			continue;
 		}
 		for (const view of mentioned) stripStrictModeNulls(root, object[key], view.props[key]);

@@ -110,6 +110,67 @@ function assertObjectRoot(node: unknown): void {
 	}
 }
 
+function unescapeJsonPointerSegment(segment: string): string {
+	return segment.replace(/~1/g, "/").replace(/~0/g, "~");
+}
+
+/**
+ * Every `$ref` in a strict schema must be a LOCAL pointer into this document's
+ * definition pool, must resolve, and must not participate in a cycle.
+ *
+ * A provider's grammar compiler only ever sees the document we send it: an
+ * external `$ref` is unfetchable, a dangling pointer is unresolvable, and
+ * recursive reference graphs are not accepted across the strict subsets we
+ * target (notably Amazon Bedrock). Any of those would be rejected at admission
+ * time for the whole request, so such a schema is unstrictifiable and the tool
+ * must be sent unstrict instead.
+ */
+function assertResolvableLocalRefs(root: Record<string, unknown>): void {
+	const resolveRef = (ref: unknown): Record<string, unknown> => {
+		if (typeof ref !== "string") throw new Unstrictifiable("a non-string $ref");
+		const match = /^#\/(\$defs|definitions)\/(.+)$/.exec(ref);
+		if (!match) throw new Unstrictifiable(`a non-local $ref (${ref})`);
+		const pool = root[match[1]];
+		const target =
+			pool && typeof pool === "object" && !Array.isArray(pool)
+				? (pool as Record<string, unknown>)[unescapeJsonPointerSegment(match[2])]
+				: undefined;
+		if (!target || typeof target !== "object" || Array.isArray(target)) {
+			throw new Unstrictifiable(`an unresolvable $ref (${ref})`);
+		}
+		return target as Record<string, unknown>;
+	};
+
+	// Grey/black DFS over the reference graph: grey means "on the current
+	// resolution chain", so re-entering it is a cycle, and black means "already
+	// proven acyclic", which keeps shared definitions linear rather than
+	// re-expanding them at every use site.
+	const grey = new Set<string>();
+	const black = new Set<string>();
+	const walk = (node: unknown): void => {
+		if (node === null || typeof node !== "object") return;
+		if (Array.isArray(node)) {
+			for (const entry of node) walk(entry);
+			return;
+		}
+		for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+			if (key !== "$ref") {
+				walk(value);
+				continue;
+			}
+			const ref = value as string;
+			if (grey.has(ref)) throw new Unstrictifiable(`a recursive $ref (${ref})`);
+			const target = resolveRef(ref);
+			if (black.has(ref)) continue;
+			grey.add(ref);
+			walk(target);
+			grey.delete(ref);
+			black.add(ref);
+		}
+	};
+	walk(root);
+}
+
 /**
  * Thrown by the throwing transform variants when a schema cannot be expressed
  * in a provider's strict subset. Callers that want per-tool fallback use the
@@ -226,6 +287,7 @@ function computeStrict(schema: object): StrictResult {
 		// JSON round-trip drops TypeBox symbol metadata providers reject.
 		const raw = JSON.parse(JSON.stringify(schema)) as unknown;
 		assertObjectRoot(raw);
+		assertResolvableLocalRefs(raw as Record<string, unknown>);
 		return { ok: transformNode(raw) as Record<string, unknown> };
 	} catch (error) {
 		return { reason: error instanceof Unstrictifiable ? unstrictifiableReason(error) : describeFailure(error) };
@@ -302,6 +364,7 @@ function computeAnthropicStrict(schema: object): StrictResult {
 	try {
 		const raw = JSON.parse(JSON.stringify(schema)) as unknown;
 		assertObjectRoot(raw);
+		assertResolvableLocalRefs(raw as Record<string, unknown>);
 		assertAnthropicStrictifiable(raw);
 		return { ok: transformJSONSchema(raw as Parameters<typeof transformJSONSchema>[0]) as Record<string, unknown> };
 	} catch (error) {
