@@ -50,7 +50,18 @@ const rewriteExtensions = new Set([
 const ignoredDirectories = new Set([".git", "node_modules"]);
 const packageNameMap = new Map(packages.map((pkg) => [pkg.upstreamName, pkg.dutchieName]));
 const upstreamInternalNames = packages.map((pkg) => pkg.upstreamName);
-const UPSTREAM_SPECIFIER_PATTERN = /@earendil-works\/[a-z0-9][a-z0-9-]*/g;
+const UPSTREAM_SPECIFIER_PATTERN = /["'](@earendil-works\/[^"'/]+)(?:\/[^"']*)?["']/g;
+
+/**
+ * Package names imported by a staged file. Only quoted specifiers count: the
+ * @earendil-works scope also shows up in prose and in globs like
+ * `@earendil-works/pi-*` inside comments that survive into dist.
+ */
+function importedUpstreamPackages(content) {
+	const names = new Set();
+	for (const match of content.matchAll(UPSTREAM_SPECIFIER_PATTERN)) names.add(match[1]);
+	return names;
+}
 
 function log(message = "") {
 	process.stdout.write(`${message}\n`);
@@ -268,10 +279,10 @@ function validateNoUpstreamInternalSpecifiers(stageDirectory, pkg) {
 		// introduces a new workspace dependency ships silently: the rescoped
 		// package would resolve it from public npm, and if the fork ever patches
 		// that package the cut would quietly run upstream's code instead.
-		for (const specifier of content.match(UPSTREAM_SPECIFIER_PATTERN) ?? []) {
+		for (const specifier of importedUpstreamPackages(content)) {
 			if (packageNameMap.has(specifier) || externalUpstreamPackages.has(specifier)) continue;
 			failures.push(
-				`${relative(stageDirectory, file)} references unknown workspace package ${specifier}. ` +
+				`${relative(stageDirectory, file)} imports unknown workspace package ${specifier}. ` +
 					"Add it to `packages` to rescope it, or to `externalUpstreamPackages` if the fork does not modify it.",
 			);
 		}
