@@ -9,13 +9,12 @@ const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
 interface JsonSchemaObject {
 	type?: string | string[];
 	properties?: Record<string, JsonSchemaObject>;
+	required?: string[];
 	items?: JsonSchemaObject | JsonSchemaObject[];
 	additionalProperties?: boolean | JsonSchemaObject;
 	allOf?: JsonSchemaObject[];
 	anyOf?: JsonSchemaObject[];
 	oneOf?: JsonSchemaObject[];
-	required?: string[];
-	const?: unknown;
 }
 
 function getSchemaTypes(schema: JsonSchemaObject): string[] {
@@ -175,6 +174,13 @@ function applySchemaArrayCoercion(value: unknown[], schema: JsonSchemaObject): v
 
 function coerceWithUnionSchema(value: unknown, schemas: JsonSchemaObject[]): unknown {
 	for (const schema of schemas) {
+		const validator = getSubSchemaValidator(schema);
+		if (validator?.Check(value)) {
+			return value;
+		}
+	}
+
+	for (const schema of schemas) {
 		const candidate = structuredClone(value);
 		const coerced = coerceWithJsonSchema(candidate, schema);
 		const validator = getSubSchemaValidator(schema);
@@ -231,6 +237,37 @@ function coerceWithJsonSchema(value: unknown, schema: JsonSchemaObject): unknown
 	return nextValue;
 }
 
+function normalizeOptionalNulls(value: unknown, schema: JsonSchemaObject): void {
+	if (Array.isArray(value)) {
+		if (Array.isArray(schema.items)) {
+			for (let index = 0; index < value.length; index++) {
+				const itemSchema = schema.items[index];
+				if (itemSchema) normalizeOptionalNulls(value[index], itemSchema);
+			}
+		} else if (schema.items) {
+			for (const item of value) normalizeOptionalNulls(item, schema.items);
+		}
+		return;
+	}
+	if (typeof value !== "object" || value === null || !schema.properties) return;
+
+	const object = value as Record<string, unknown>;
+	const required = new Set(schema.required ?? []);
+	for (const [key, propertySchema] of Object.entries(schema.properties)) {
+		if (!(key in object)) continue;
+		if (
+			object[key] === null &&
+			!required.has(key) &&
+			typeof (propertySchema as { $ref?: unknown }).$ref !== "string" &&
+			getSubSchemaValidator(propertySchema)?.Check(null) === false
+		) {
+			delete object[key];
+		} else {
+			normalizeOptionalNulls(object[key], propertySchema);
+		}
+	}
+}
+
 function getValidator(schema: Tool["parameters"]): ReturnType<typeof Compile> {
 	const key = schema as object;
 	const cached = validatorCache.get(key);
@@ -253,81 +290,6 @@ function formatValidationPath(error: TLocalizedValidationError): string {
 	}
 	const path = error.instancePath.replace(/^\//, "").replace(/\//g, ".");
 	return path || "root";
-}
-
-/**
- * Recursively remove null values for properties the original schema marks
- * optional (not in `required`) and not explicitly nullable. These nulls are
- * artifacts of the strict-mode nullable-optional transformation — a null for
- * an optional non-nullable property would have failed validation anyway, so
- * stripping is strictly an improvement for every provider.
- */
-function stripStrictModeNulls(value: unknown, schema: JsonSchemaObject | undefined): void {
-	if (!schema || value === null || typeof value !== "object") return;
-	if (Array.isArray(value)) {
-		const items = schema.items;
-		if (Array.isArray(items)) {
-			for (const [i, entry] of value.entries()) stripStrictModeNulls(entry, items[i]);
-		} else if (items) {
-			for (const entry of value) stripStrictModeNulls(entry, items);
-		}
-		return;
-	}
-	// Collect every object-shaped view of this schema: the direct node plus
-	// any object branches under allOf/anyOf/oneOf — the strictifier recurses
-	// into compositions, so its null artifacts can appear inside them too.
-	const views = collectObjectViews(schema);
-	if (views.length === 0) return;
-	const obj = value as Record<string, unknown>;
-	for (const key of Object.keys(obj)) {
-		const mentioned = views.filter((v) => key in v.props);
-		if (mentioned.length === 0) continue;
-		if (obj[key] === null) {
-			// Strip only when NO view requires the key and NO view allows null
-			// for it — i.e. the null is unambiguously a strict-mode artifact.
-			const anyRequires = views.some((v) => v.required.has(key));
-			const anyAllowsNull = mentioned.some((v) => schemaAllowsNull(v.props[key]));
-			if (!anyRequires && !anyAllowsNull) {
-				delete obj[key];
-			}
-			continue;
-		}
-		for (const v of mentioned) stripStrictModeNulls(obj[key], v.props[key]);
-	}
-}
-
-interface ObjectSchemaView {
-	props: Record<string, JsonSchemaObject>;
-	required: Set<string>;
-}
-
-function collectObjectViews(schema: JsonSchemaObject): ObjectSchemaView[] {
-	const out: ObjectSchemaView[] = [];
-	const visit = (s: JsonSchemaObject | undefined): void => {
-		if (!s || typeof s !== "object" || Array.isArray(s)) return;
-		if (s.properties && typeof s.properties === "object") {
-			out.push({
-				props: s.properties,
-				required: new Set(Array.isArray(s.required) ? s.required : []),
-			});
-		}
-		for (const arr of [s.allOf, s.anyOf, s.oneOf]) {
-			if (Array.isArray(arr)) for (const member of arr) visit(member);
-		}
-	};
-	visit(schema);
-	return out;
-}
-
-function schemaAllowsNull(schema: JsonSchemaObject | undefined): boolean {
-	if (!schema) return true;
-	const t = schema.type;
-	if (t === "null") return true;
-	if (Array.isArray(t) && t.includes("null")) return true;
-	const anyOf = schema.anyOf as JsonSchemaObject[] | undefined;
-	if (Array.isArray(anyOf) && anyOf.some((m) => schemaAllowsNull(m) && m?.type === "null")) return true;
-	if ("const" in schema && schema.const === null) return true;
-	return false;
 }
 
 /**
@@ -354,12 +316,7 @@ export function validateToolCall(tools: Tool[], toolCall: ToolCall): any {
  */
 export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 	const args = structuredClone(toolCall.arguments);
-	// Strict-mode tool schemas (see utils/strict-tool-schema.ts) express
-	// optional properties as required-but-nullable; the model emits null for
-	// "absent". Strip those nulls back off (only where the ORIGINAL schema
-	// marks the property optional and not nullable) before validating against
-	// the original schema.
-	stripStrictModeNulls(args, tool.parameters as unknown as JsonSchemaObject);
+	normalizeOptionalNulls(args, tool.parameters as JsonSchemaObject);
 	Value.Convert(tool.parameters, args);
 
 	const validator = getValidator(tool.parameters);
