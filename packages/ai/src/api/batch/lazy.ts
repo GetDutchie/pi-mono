@@ -1,26 +1,29 @@
 import type { ProviderBatch } from "../../types.ts";
 
 /**
- * Lazy batch-transport wrappers, mirroring `api/*.lazy.ts` for streams: the
- * provider SDK is only imported when a batch call is actually made, so
- * declaring batch support costs nothing at startup.
+ * Wraps a dynamically imported batch-transport module as `ProviderBatch`,
+ * mirroring `lazyApi` for streams: the provider SDK is only imported when a
+ * batch call is actually made, so declaring batch support costs nothing at
+ * startup.
+ *
+ * Each transport gets its own `<name>.lazy.ts` module. Co-locating several
+ * dynamic imports in one module would defeat tree-shaking: a bundler that
+ * inlines dynamic imports pulls every transport (and its SDK) into any bundle
+ * that touches one of them.
  */
-const lazyBatch = (
+export function lazyBatch(
 	load: () => Promise<{ default?: ProviderBatch } & Record<string, unknown>>,
 	key: string,
-): ProviderBatch => ({
-	async submitBatch(model, items, options) {
-		return ((await load())[key] as ProviderBatch).submitBatch(model, items, options);
-	},
-	async pollBatch(model, batchId, items, options) {
-		return ((await load())[key] as ProviderBatch).pollBatch(model, batchId, items, options);
-	},
-	async submitAndAwait(model, items, options, hooks) {
-		return ((await load())[key] as ProviderBatch).submitAndAwait(model, items, options, hooks);
-	},
-});
-
-export const anthropicBatchApi = (): ProviderBatch => lazyBatch(() => import("./anthropic-batch.ts"), "anthropicBatch");
-export const openaiBatchApi = (): ProviderBatch => lazyBatch(() => import("./openai-batch.ts"), "openaiBatch");
-export const googleBatchApi = (): ProviderBatch => lazyBatch(() => import("./google-batch.ts"), "googleBatch");
-export const fireworksBatchApi = (): ProviderBatch => lazyBatch(() => import("./fireworks-batch.ts"), "fireworksBatch");
+): ProviderBatch {
+	return {
+		async submitBatch(model, items, options) {
+			return ((await load())[key] as ProviderBatch).submitBatch(model, items, options);
+		},
+		async pollBatch(model, batchId, items, options) {
+			return ((await load())[key] as ProviderBatch).pollBatch(model, batchId, items, options);
+		},
+		async submitAndAwait(model, items, options, hooks) {
+			return ((await load())[key] as ProviderBatch).submitAndAwait(model, items, options, hooks);
+		},
+	};
+}

@@ -4,6 +4,7 @@ import type { ApiKeyAuth, CredentialStore, OAuthAuth, ProviderAuth } from "../sr
 import { calculateCost, createModels, createProvider, hasApi, type Provider } from "../src/models.ts";
 import { InMemoryModelsStore } from "../src/models-store.ts";
 import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions, StreamOptions, Usage } from "../src/types.ts";
+import { NotBatchableError } from "../src/types.ts";
 import { AssistantMessageEventStream } from "../src/utils/event-stream.ts";
 
 function testModel(provider: string, id: string): Model<Api> {
@@ -78,6 +79,12 @@ function testProvider(input: {
 		refreshModels: input.refreshModels,
 		stream: (model, _context, options) => respond(model, options as StreamOptions | undefined),
 		streamSimple: (model, _context, options) => respond(model, options as SimpleStreamOptions | undefined),
+		// This stub has no batch transport, so it refuses loudly rather than
+		// emulating batch with realtime calls.
+		canBatch: () => false,
+		submitBatch: (model) => Promise.reject(new NotBatchableError(input.id, model.id)),
+		pollBatch: (model) => Promise.reject(new NotBatchableError(input.id, model.id)),
+		submitAndAwaitBatch: (model) => Promise.reject(new NotBatchableError(input.id, model.id)),
 	};
 }
 

@@ -1,5 +1,5 @@
 import { anthropicMessagesApi } from "../api/anthropic-messages.lazy.ts";
-import { fireworksBatchApi } from "../api/batch/lazy.ts";
+import { fireworksBatchApi } from "../api/batch/fireworks-batch.lazy.ts";
 import { openAICompletionsApi } from "../api/openai-completions.lazy.ts";
 import { envApiKeyAuth } from "../auth/helpers.ts";
 import { createProvider, type Provider } from "../models.ts";

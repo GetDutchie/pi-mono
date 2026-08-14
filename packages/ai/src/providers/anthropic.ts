@@ -1,5 +1,5 @@
 import { anthropicMessagesApi } from "../api/anthropic-messages.lazy.ts";
-import { anthropicBatchApi } from "../api/batch/lazy.ts";
+import { anthropicBatchApi } from "../api/batch/anthropic-batch.lazy.ts";
 import { lazyOAuth } from "../auth/helpers.ts";
 import { loadAnthropicOAuth } from "../auth/oauth/load.ts";
 import type { ApiKeyAuth } from "../auth/types.ts";

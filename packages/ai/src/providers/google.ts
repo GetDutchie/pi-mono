@@ -1,4 +1,4 @@
-import { googleBatchApi } from "../api/batch/lazy.ts";
+import { googleBatchApi } from "../api/batch/google-batch.lazy.ts";
 import { googleGenerativeAIApi } from "../api/google-generative-ai.lazy.ts";
 import { envApiKeyAuth } from "../auth/helpers.ts";
 import { createProvider, type Provider } from "../models.ts";

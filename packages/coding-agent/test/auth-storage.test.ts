@@ -5,6 +5,7 @@ import { createModels, type Provider } from "@earendil-works/pi-ai";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { nonBatchableProvider } from "./non-batchable-provider.ts";
 
 describe("AuthStorage", () => {
 	let tempDir: string;
@@ -192,6 +193,7 @@ describe("AuthStorage", () => {
 			streamSimple: () => {
 				throw new Error("not used");
 			},
+			...nonBatchableProvider(providerId),
 		};
 		const models = createModels({ credentials: storage });
 		models.setProvider(provider);

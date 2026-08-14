@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { nonBatchableProvider } from "./non-batchable-provider.ts";
 
 function model(id: string): Model<"openai-completions"> {
 	return {
@@ -63,6 +64,7 @@ describe("extension provider model lifecycle", () => {
 			streamSimple: () => {
 				throw new Error("unused");
 			},
+			...nonBatchableProvider("extension-native"),
 		};
 
 		runtime.registerNativeProvider(provider);
@@ -127,6 +129,7 @@ describe("extension provider model lifecycle", () => {
 				streamSimple: () => {
 					throw new Error("unused");
 				},
+				...nonBatchableProvider("extension-native"),
 			});
 
 			expect(runtime.getModel("extension-native", "native")?.contextWindow).toBe(4242);

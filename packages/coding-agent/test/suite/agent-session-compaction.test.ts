@@ -6,6 +6,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { estimateTokens } from "../../src/core/compaction/index.ts";
+import { nonBatchableProvider } from "../non-batchable-provider.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 type SessionWithCompactionInternals = {
@@ -194,6 +195,7 @@ describe("AgentSession compaction characterization", () => {
 			getModels: () => harness.models,
 			stream: () => createAssistantMessageEventStream(),
 			streamSimple: () => createAssistantMessageEventStream(),
+			...nonBatchableProvider(model.provider),
 		});
 		seedCompactableSession(harness);
 		harness.setResponses([

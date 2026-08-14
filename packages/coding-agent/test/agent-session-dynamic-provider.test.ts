@@ -11,6 +11,7 @@ import type { ExtensionFactory } from "../src/core/sdk.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { nonBatchableProvider } from "./non-batchable-provider.ts";
 
 function nativeAnthropicProvider(baseUrl: string): Provider {
 	const model = { ...getModel("anthropic", "claude-sonnet-4-5")!, baseUrl };
@@ -31,6 +32,7 @@ function nativeAnthropicProvider(baseUrl: string): Provider {
 		streamSimple: () => {
 			throw new Error("unused");
 		},
+		...nonBatchableProvider("anthropic"),
 	};
 }
 

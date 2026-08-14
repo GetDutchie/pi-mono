@@ -1019,8 +1019,7 @@ function buildParams(
 		// structurally-invalid JSON. anthropicStrictToolSchema applies that same
 		// transform (returning null only for a genuinely un-strictifiable schema,
 		// in which case we fall back to the raw schema rather than drop it).
-		const constrainedSchema =
-			anthropicStrictToolSchema(options.outputSchema.schema) ?? options.outputSchema.schema;
+		const constrainedSchema = anthropicStrictToolSchema(options.outputSchema.schema) ?? options.outputSchema.schema;
 		params.output_config = {
 			format: { type: "json_schema", schema: constrainedSchema },
 		};
@@ -1032,7 +1031,6 @@ function buildParams(
 	}
 
 	if (immediateTools.length > 0 || deferredTools.length > 0) {
-		const strictEnabled = getProviderEnvValue("PI_STRICT_TOOLS", options?.env) !== "0";
 		params.tools = [
 			...convertTools(
 				immediateTools,
@@ -1318,12 +1316,6 @@ function convertMessages(
 
 function shouldUseFineGrainedToolStreamingBeta(model: Model<"anthropic-messages">, context: Context): boolean {
 	return !!context.tools?.length && !getAnthropicCompat(model).supportsEagerToolInputStreaming;
-}
-
-interface ConvertAnthropicToolsOptions {
-	cacheControl?: CacheControlEphemeral;
-	strictEnabled?: boolean;
-	deferLoading?: boolean;
 }
 
 function convertTools(
