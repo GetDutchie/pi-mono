@@ -52,7 +52,8 @@ const rewriteExtensions = new Set([
 const ignoredDirectories = new Set([".git", "node_modules"]);
 const packageNameMap = new Map(packages.map((pkg) => [pkg.upstreamName, pkg.dutchieName]));
 const upstreamInternalNames = packages.map((pkg) => pkg.upstreamName);
-const UPSTREAM_SPECIFIER_PATTERN = /["'](@earendil-works\/[^"'/]+)(?:\/[^"']*)?["']/g;
+const UPSTREAM_SPECIFIER_PATTERN = /["'](@earendil-works\/[a-z0-9_.-]+)(?::[^"']*)?(?:\/[^"']*)?["']/g;
+const DUTCHIE_SPECIFIER_PATTERN = /["'](@getdutchie\/[a-z0-9_.-]+)(?::[^"']*)?(?:\/[^"']*)?["']/g;
 
 /**
  * Package names imported by a staged file. Only quoted specifiers count: the
@@ -62,6 +63,12 @@ const UPSTREAM_SPECIFIER_PATTERN = /["'](@earendil-works\/[^"'/]+)(?:\/[^"']*)?[
 function importedUpstreamPackages(content) {
 	const names = new Set();
 	for (const match of content.matchAll(UPSTREAM_SPECIFIER_PATTERN)) names.add(match[1]);
+	return names;
+}
+
+function importedDutchiePackages(content) {
+	const names = new Set();
+	for (const match of content.matchAll(DUTCHIE_SPECIFIER_PATTERN)) names.add(match[1]);
 	return names;
 }
 
@@ -270,6 +277,14 @@ function validateNoUpstreamInternalSpecifiers(stageDirectory, pkg) {
 		}
 	}
 
+	const packageJson = readJson(join(stageDirectory, "package.json"));
+	const declaredDependencies = new Set([
+		...Object.keys(packageJson.dependencies ?? {}),
+		...Object.keys(packageJson.devDependencies ?? {}),
+		...Object.keys(packageJson.optionalDependencies ?? {}),
+		...Object.keys(packageJson.peerDependencies ?? {}),
+	]);
+
 	const failures = [];
 	for (const file of scannedFiles) {
 		const content = readFileSync(file, "utf8");
@@ -287,6 +302,16 @@ function validateNoUpstreamInternalSpecifiers(stageDirectory, pkg) {
 				`${relative(stageDirectory, file)} imports unknown workspace package ${specifier}. ` +
 					"Add it to `packages` to rescope it, or to `externalUpstreamPackages` if the fork does not modify it.",
 			);
+		}
+		// Ensure that any rescoped Dutchie package imported at runtime is declared
+		// in package.json dependencies so isolated consumer installs resolve it.
+		for (const specifier of importedDutchiePackages(content)) {
+			if (specifier === pkg.dutchieName) continue;
+			if (!declaredDependencies.has(specifier)) {
+				failures.push(
+					`${relative(stageDirectory, file)} imports ${specifier} but ${pkg.dutchieName} does not declare it in dependencies`,
+				);
+			}
 		}
 	}
 	if (failures.length > 0) {
@@ -390,7 +415,8 @@ function validateInstall(paths, tarballsByName) {
 	writeJson(join(installDirectory, "package.json"), { private: true, type: "module", dependencies });
 	writeFileSync(join(installDirectory, ".npmrc"), "@getdutchie:registry=https://npm.pkg.github.com\n");
 	run("npm", ["install", "--omit=dev", "--ignore-scripts"], { cwd: installDirectory });
-	const ls = run("npm", ["ls", "@getdutchie/pi-ai", "@getdutchie/pi-agent-core", "@getdutchie/pi-tui", "@getdutchie/pi-coding-agent", "--all"], {
+	const rescopedNames = packages.map((pkg) => pkg.dutchieName);
+	const ls = run("npm", ["ls", ...rescopedNames, "--all"], {
 		capture: true,
 		cwd: installDirectory,
 	}).stdout;
@@ -400,6 +426,35 @@ function validateInstall(paths, tarballsByName) {
 		"-e",
 		'import("@getdutchie/pi-coding-agent").then(() => console.log("@getdutchie/pi-coding-agent import ok"))',
 	], { cwd: installDirectory });
+
+	log("\nValidating isolated direct consumer install of @getdutchie/pi-coding-agent...");
+	const isolatedDirectory = join(paths.outDir, "isolated-coding-agent-check");
+	mkdirSync(isolatedDirectory, { recursive: true });
+	const overrides = Object.fromEntries(
+		packages.map((pkg) => [pkg.dutchieName, fileSpecifier(isolatedDirectory, tarballsByName.get(pkg.dutchieName))]),
+	);
+	writeJson(join(isolatedDirectory, "package.json"), {
+		dependencies: {
+			"@getdutchie/pi-coding-agent": fileSpecifier(isolatedDirectory, tarballsByName.get("@getdutchie/pi-coding-agent")),
+		},
+		overrides,
+		private: true,
+		type: "module",
+	});
+	writeFileSync(join(isolatedDirectory, ".npmrc"), "@getdutchie:registry=https://npm.pkg.github.com\n");
+	run("npm", ["install", "--omit=dev", "--ignore-scripts"], { cwd: isolatedDirectory });
+
+	const isolatedLs = run("npm", ["ls", "@getdutchie/pi-server", "--all"], {
+		capture: true,
+		cwd: isolatedDirectory,
+	}).stdout;
+	log(isolatedLs.trim());
+
+	run(process.execPath, [
+		"--input-type=module",
+		"-e",
+		'import("@getdutchie/pi-coding-agent").then(() => console.log("isolated @getdutchie/pi-coding-agent direct import ok"))',
+	], { cwd: isolatedDirectory });
 }
 
 function publishTarball(tarball, options) {
