@@ -14,6 +14,7 @@ const packages = [
 		upstreamName: "@earendil-works/pi-session-backend-sqlite-node",
 		dutchieName: "@getdutchie/pi-session-backend-sqlite-node",
 	},
+	{ directory: "packages/server", upstreamName: "@earendil-works/pi-server", dutchieName: "@getdutchie/pi-server" },
 	{ directory: "packages/coding-agent", upstreamName: "@earendil-works/pi-coding-agent", dutchieName: "@getdutchie/pi-coding-agent" },
 ];
 
@@ -31,6 +32,7 @@ const externalUpstreamPackages = new Map([
 	["@earendil-works/pi-telemetry", "packages/telemetry"],
 	["@earendil-works/pi-client", "packages/client"],
 	["@earendil-works/pi-protocol", "packages/protocol"],
+	["@earendil-works/chord", "packages/chord"],
 ]);
 
 const rewriteExtensions = new Set([
