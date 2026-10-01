@@ -4,6 +4,9 @@
 **Upstream:** `earendil-works/pi-mono` @ `5bc1c2c0a` (2026-07-25), version **0.82.1**.
 **Merge base:** `8479bd84`. **Behind:** 195 commits. **Ahead:** 29 (21 non-merge).
 
+> Historical note: sections 1–5 describe the 0.82.1 reconciliation. The current
+> reconciliation against upstream `v0.99.2` is recorded in §6 below.
+
 This document records the triage of the Dutchie patch line and the design rules
 agreed for the batch work. It exists because the triage is expensive to redo —
 it required diffing every Dutchie commit against upstream's new
@@ -355,3 +358,100 @@ regression nobody would otherwise notice.
 
 `git worktree prune` — several `/tmp/pi-mono-release-dutchie-*` worktrees from
 cuts 6–9 are stale.
+
+---
+
+## 6. Reconciliation against upstream `v0.99.2` (2026-10-01)
+
+### Phase 1: delta disposition
+
+The fork is still needed. Upstream `v0.99.2` has substantially newer models and
+features, but does not subsume the response-level structured-output API, batch
+jobs, CommonJS export conditions, or fail-closed Anthropic streaming behavior.
+
+| Dutchie delta | Evidence in `v0.99.2` | Disposition |
+| --- | --- | --- |
+| `Tool.constrainedSampling` reimplementation and the fork's strictification in the realtime tool path | Upstream `packages/ai/src/api/constrained-sampling.ts`, `packages/ai/src/types.ts`, and `packages/ai/CHANGELOG.md` document provider-native JSON-schema and grammar constrained sampling (`#6341`). | **Drop duplicate realtime implementation.** Use upstream's per-tool API and provider logic. Keep `utils/strict-tool-schema.ts` only where the still-private batch transports and response-level structured output need that transform. |
+| Response-level `StreamOptions.outputSchema` / `completeStructured()` | `packages/ai/src/types.ts:187` has no response `outputSchema`; `anthropic-messages.ts` only assigns `output_config.effort`, and the Bedrock adapter does not set schema `outputConfig`. Upstream's `outputSchema` uses elsewhere are extension-tool results, not whole-response constrained decoding. | **Keep.** This is distinct from tool-argument constrained sampling. |
+| Anthropic fail-closed streaming | In upstream `packages/ai/src/api/anthropic-messages.ts`, after the response callback the parser starts consuming stream events without checking `response.ok` or requiring `text/event-stream`. | **Keep.** `.asResponse()` bypasses SDK status handling; non-SSE responses otherwise look like empty successful streams. |
+| Claude 5 Bedrock prompt-cache gate | Upstream `supportsPromptCaching()` recognizes Fable 5, Opus 5, and Sonnet 5, but not Haiku 5. | **Keep only the Haiku 5 addition.** The upstream tag has already subsumed the earlier Opus 5 fix. |
+| `require` conditions for every `pi-ai` export | `v0.99.2:packages/ai/package.json` still has `types` + `import` only. The tag adds the `./models` export, which also needs `require`. | **Keep and extend** the conditions to the new `./models` subpath. |
+| `ProviderBatch` and real provider batch transports | The tag has no `ProviderBatch`, `submitBatch`, or batch transport files in `packages/ai/src`; unrelated image batching mentions are not provider-side jobs. | **Keep.** The verified Anthropic, Google, and Fireworks transports remain wired; the OpenAI-compatible file transport remains deliberately unwired until verified. Unsupported providers stay explicitly non-batchable. |
+| Dutchie package names and staged cut tooling | Upstream manifests remain `@earendil-works/*`; none publishes under `@getdutchie/*`. The fork's `scripts/publish-dutchie-cut.mjs` performs the rescope in a temporary staging copy. | **Keep.** Added the new upstream `pi-codemode`/`pi-mcp` dependencies to the external-package allowlist and verify against the pinned release tag, not a moving `upstream/main`. |
+| `pi-server` as a production coding-agent dependency / private runtime dependency check | Upstream `packages/coding-agent/package.json` puts `pi-server` in `devDependencies`, excludes `dist/experimental` from the package, and `scripts/coding-agent-consumer.mjs` explicitly verifies `pi-server` is not installed by an isolated consumer. | **Drop.** Do not promote or rescope `pi-server` for the production coding-agent cut; isolate-check only its actual production rescope dependencies. |
+| Model catalog newer than 0.85 | Upstream `packages/ai/scripts/generate-models.ts` and `packages/ai/CHANGELOG.md` add GPT-6 models. A fresh `npm run build` generated OpenRouter data with `openai/gpt-6-luna`. The built `OPENROUTER_MODELS["openai/gpt-6-luna"]` resolves to API `openai-completions`, provider `openrouter`, context 1,050,000, max output 128,000, and cost metadata. | **Use upstream catalog; no Dutchie model patch needed.** The reconciled build contains the motivating model. |
+
+### Merge and packaging notes
+
+- Fork default remains `origin/main`; the reconciliation branch is based on that
+  branch and merges the release tag `v0.99.2`, not upstream's newer development
+  head. The `fetch origin upstream --tags` shorthand treats `upstream` as a
+  refspec for `origin`; fetch the remotes separately with `git fetch origin
+  --tags` and `git fetch upstream --tags`.
+- The 0.99 provider contract makes `canBatch`, `submitBatch`, `pollBatch`, and
+  `submitAndAwaitBatch` required even on hand-written providers. The reconciled
+  code keeps explicit `NotBatchableError` refusals for Radius, llama.cpp, and
+  unrouted virtual models. `createProvider()` supplies the same refusal for
+  providers without a transport.
+- Keep `compat.ts` lazy: importing `google-shared.ts` just to inspect strict
+  sampling eagerly loads `@google/genai` and breaks the lazy-module contract.
+  The structured-completion diagnostic uses the same Gemini-version predicate
+  locally instead.
+- `pi-ai`'s `constrained-sampling.ts` now comes from upstream. The fork's
+  strict-schema helper remains only for batch structured results and native
+  response-level structured output. The Dutchie `completeStructured()` fallback
+  still validates tool results locally and now adds a message diagnostic when
+  strict provider sampling cannot be used; the Anthropic native-output fallback
+  also records a diagnostic. Generic upstream `Tool.constrainedSampling` policy
+  remains upstream-owned.
+- The release-cut verifier must compare unchanged external workspaces with the
+  base release tag (`v0.99.2`). Comparing with `upstream/main` is not
+  reproducible: that branch has already changed chord, MCP, and server files
+  after this release.
+- `npm run build` hydrates generated provider JSON from live catalog APIs. The
+  checked-out source tag does not contain `src/providers/data/*.json`; the build
+  generates these files locally and copies them into `dist/providers/data/`.
+  The final build confirmed the OpenRouter `openai/gpt-6-luna` entry.
+- The `v0.99.2` dependency graph reports one high `brace-expansion` advisory
+  (`5.0.9` via coding-agent's `minimatch`). The Dutchie staged/isolated cut
+  resolves production dependencies without the coding-agent shrinkwrap and
+  reported zero vulnerabilities. This reconciliation does not alter the
+  upstream-pinned root dependency graph; review the advisory before a future
+  upstream lockfile update.
+
+### Current cut and remaining operator steps
+
+The source packages stay at upstream version `0.99.2`; the Dutchie staging
+script supplies the new-base suffix `0.99.2-dutchie.1` (the suffix counter
+resets for the new base release).
+
+1. After reviewing the reconciliation PR and CI, build and validate the private
+   tarballs without publishing:
+
+   ```sh
+   node scripts/publish-dutchie-cut.mjs \
+     --version 0.99.2-dutchie.1 \
+     --out /tmp/pi-dutchie-cut-0.99.2-dutchie.1 \
+     --force
+   ```
+
+2. Only after explicit release approval, publish the validated tarballs to
+   GitHub Packages (the script gets the token from `gh auth token`):
+
+   ```sh
+   node scripts/publish-dutchie-cut.mjs \
+     --version 0.99.2-dutchie.1 \
+     --out /tmp/pi-dutchie-cut-0.99.2-dutchie.1 \
+     --force \
+     --publish \
+     --registry https://npm.pkg.github.com \
+     --tag latest
+   ```
+
+   This is a GitHub Packages cut, not an npm publish. Do not rerun the publish
+   command for a version already published; the script rebuilds and packs before
+   each invocation.
+
+3. Update URA and Alchemy consumers to the approved `0.99.2-dutchie.1` versions
+   as described in §5. This reconciliation task does not publish or change
+   those consumer repositories.

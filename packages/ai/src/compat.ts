@@ -32,6 +32,7 @@ import type { Static, TSchema } from "typebox";
 import { anthropicMessagesApi } from "./api/anthropic-messages.lazy.ts";
 import { azureOpenAIResponsesApi } from "./api/azure-openai-responses.lazy.ts";
 import { bedrockConverseStreamApi } from "./api/bedrock-converse-stream.lazy.ts";
+import { resolveJsonSchemaStrictSampling } from "./api/constrained-sampling.ts";
 import { googleGenerativeAIApi } from "./api/google-generative-ai.lazy.ts";
 import { googleVertexApi } from "./api/google-vertex.lazy.ts";
 import { mistralConversationsApi } from "./api/mistral-conversations.lazy.ts";
@@ -52,6 +53,7 @@ import type {
 	AssistantMessage,
 	AssistantMessageEventStream,
 	Context,
+	JsonObject,
 	Model,
 	ProviderStreamOptions,
 	ProviderStreams,
@@ -61,7 +63,10 @@ import type {
 	TextContent,
 	Tool,
 	ToolCall,
+	TranscriptContext,
 } from "./types.ts";
+import { appendAssistantMessageDiagnostic } from "./utils/diagnostics.ts";
+import { normalizeContext } from "./utils/transcript.ts";
 import { validateToolArguments } from "./utils/validation.ts";
 
 /** @deprecated Static catalog read. Use `getBuiltinModel` from "@earendil-works/pi-ai/providers/all" or `Models.getModel()`. */
@@ -75,13 +80,13 @@ export const getProviders = getBuiltinProviders;
 
 export type ApiStreamFunction = (
 	model: Model<Api>,
-	context: Context,
+	context: TranscriptContext,
 	options?: StreamOptions,
 ) => AssistantMessageEventStream;
 
 export type ApiStreamSimpleFunction = (
 	model: Model<Api>,
-	context: Context,
+	context: TranscriptContext,
 	options?: SimpleStreamOptions,
 ) => AssistantMessageEventStream;
 
@@ -257,15 +262,16 @@ export function stream<TApi extends Api>(
 	context: Context,
 	options?: ProviderStreamOptions,
 ): AssistantMessageEventStream {
+	const transcript = normalizeContext(context);
 	const builtinProvider = getBuiltinProviderForModel(model);
 	if (builtinProvider) {
 		if (model.provider.startsWith("cloudflare-") && !hasResolvedCloudflareAuth(options)) {
-			return compatModels.stream(model, context, options as ModelsApiStreamOptions<TApi> | undefined);
+			return compatModels.stream(model, transcript, options as ModelsApiStreamOptions<TApi> | undefined);
 		}
-		return builtinProvider.stream(model, context, withEnvApiKey(model, options) as ApiStreamOptions<TApi>);
+		return builtinProvider.stream(model, transcript, withEnvApiKey(model, options) as ApiStreamOptions<TApi>);
 	}
 	const provider = resolveApiProvider(model.api);
-	return provider.stream(model, context, withEnvApiKey(model, options) as StreamOptions);
+	return provider.stream(model, transcript, withEnvApiKey(model, options) as StreamOptions);
 }
 
 export async function complete<TApi extends Api>(
@@ -282,15 +288,16 @@ export function streamSimple<TApi extends Api>(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
+	const transcript = normalizeContext(context);
 	const builtinProvider = getBuiltinProviderForModel(model);
 	if (builtinProvider) {
 		if (model.provider.startsWith("cloudflare-") && !hasResolvedCloudflareAuth(options)) {
-			return compatModels.streamSimple(model, context, options);
+			return compatModels.streamSimple(model, transcript, options);
 		}
-		return builtinProvider.streamSimple(model, context, withEnvApiKey(model, options));
+		return builtinProvider.streamSimple(model, transcript, withEnvApiKey(model, options));
 	}
 	const provider = resolveApiProvider(model.api);
-	return provider.streamSimple(model, context, withEnvApiKey(model, options));
+	return provider.streamSimple(model, transcript, withEnvApiKey(model, options));
 }
 
 export async function completeSimple<TApi extends Api>(
@@ -310,15 +317,11 @@ export type StructuredOutputValue<TSchemaValue extends StructuredOutputSchema> =
 	? Static<TSchemaValue>
 	: unknown;
 
-/** Options for a schema-constrained structured completion. */
 export interface StructuredCompletionOptions extends ProviderStreamOptions {
-	/** Internal function name sent to the provider. It must be valid for every builtin provider. */
 	toolName?: string;
-	/** Description sent with the internal output function. */
 	toolDescription?: string;
 }
 
-/** A provider response whose output arguments passed the original TypeBox schema. */
 export interface StructuredCompletion<T> {
 	value: T;
 	message: AssistantMessage;
@@ -327,14 +330,6 @@ export interface StructuredCompletion<T> {
 const DEFAULT_STRUCTURED_OUTPUT_TOOL_NAME = "submit_structured_output";
 const DEFAULT_STRUCTURED_OUTPUT_TOOL_DESCRIPTION = "Return the requested structured output using this function.";
 const STRUCTURED_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-
-/**
- * JSON Schema keywords Anthropic's native structured-output grammar rejects
- * with a 400. We fail fast with the exact offending paths instead of silently
- * stripping constraints: the consumer decides how to express bounds (e.g.
- * enforce them in application-level validation and omit them from the
- * transmitted schema).
- */
 const ANTHROPIC_UNSUPPORTED_SCHEMA_KEYWORDS = new Set([
 	"minimum",
 	"maximum",
@@ -354,19 +349,14 @@ const ANTHROPIC_UNSUPPORTED_SCHEMA_KEYWORDS = new Set([
 
 function collectUnsupportedAnthropicKeywords(node: unknown, path: string, found: string[]): void {
 	if (Array.isArray(node)) {
-		for (const [index, item] of node.entries()) {
-			collectUnsupportedAnthropicKeywords(item, `${path}[${index}]`, found);
-		}
+		for (const [index, item] of node.entries()) collectUnsupportedAnthropicKeywords(item, `${path}[${index}]`, found);
 		return;
 	}
 	if (node === null || typeof node !== "object") return;
 	for (const [key, value] of Object.entries(node)) {
 		const childPath = path ? `${path}.${key}` : key;
-		if (ANTHROPIC_UNSUPPORTED_SCHEMA_KEYWORDS.has(key)) {
-			found.push(childPath);
-			continue;
-		}
-		collectUnsupportedAnthropicKeywords(value, childPath, found);
+		if (ANTHROPIC_UNSUPPORTED_SCHEMA_KEYWORDS.has(key)) found.push(childPath);
+		else collectUnsupportedAnthropicKeywords(value, childPath, found);
 	}
 }
 
@@ -389,8 +379,27 @@ function usesNativeStructuredOutput(model: Model<Api>): boolean {
 	return /claude-(?:sonnet|haiku|opus)-4-(?:5|6)(?:[^0-9]|$)/.test(identifiers);
 }
 
-function rejectsUnsupportedBedrockStructuredOutput(model: Model<Api>): boolean {
-	return model.api === "bedrock-converse-stream" && !usesNativeStructuredOutput(model);
+function supportsStructuredToolStrictSampling(model: Model<Api>): boolean {
+	switch (model.api) {
+		case "anthropic-messages":
+			return (model.compat as { supportsStrictTools?: boolean } | undefined)?.supportsStrictTools ?? false;
+		case "bedrock-converse-stream":
+			return (model.compat as { supportsStrictMode?: boolean } | undefined)?.supportsStrictMode ?? false;
+		case "google-generative-ai":
+		case "google-vertex": {
+			const match = model.id.toLowerCase().match(/^gemini(?:-live)?-(\d+)/);
+			return match !== null && Number.parseInt(match[1], 10) >= 3;
+		}
+		case "mistral-conversations":
+			return true;
+		case "openai-completions":
+		case "openai-responses":
+		case "openai-codex-responses":
+		case "azure-openai-responses":
+			return (model.compat as { supportsStrictMode?: boolean } | undefined)?.supportsStrictMode !== false;
+		default:
+			return false;
+	}
 }
 
 function structuredToolChoice(model: Model<Api>, toolName: string): Record<string, unknown> {
@@ -408,18 +417,11 @@ function structuredToolChoice(model: Model<Api>, toolName: string): Record<strin
 		case "google-vertex":
 			return { toolChoice: "any" };
 		default:
-			// Custom providers receive the output tool and are responsible for
-			// honoring it. Builtin APIs above always force it natively.
 			return {};
 	}
 }
 
-/**
- * Produces a typed JSON value through a provider tool call, never by parsing
- * assistant text. Builtin providers receive a single forced output tool; their
- * normal tool-schema conversion applies provider-native strict constraints
- * where available, and the original TypeBox schema is always validated here.
- */
+/** Produce one typed JSON value through native response formatting or a forced private tool call. */
 export async function completeStructured<TParameters extends StructuredOutputSchema>(
 	model: Model<Api>,
 	context: Context,
@@ -429,48 +431,26 @@ export async function completeStructured<TParameters extends StructuredOutputSch
 	if (context.tools?.length) {
 		throw new Error("completeStructured does not accept context.tools; structured output owns the only tool slot");
 	}
-
 	const toolName = options.toolName ?? DEFAULT_STRUCTURED_OUTPUT_TOOL_NAME;
-	if (!STRUCTURED_TOOL_NAME_PATTERN.test(toolName)) {
+	if (!STRUCTURED_TOOL_NAME_PATTERN.test(toolName))
 		throw new Error(`Invalid structured output tool name: ${toolName}`);
-	}
 	const toolDescription = options.toolDescription ?? DEFAULT_STRUCTURED_OUTPUT_TOOL_DESCRIPTION;
-	if (!toolDescription.trim()) {
-		throw new Error("Structured output tool description must not be empty");
-	}
+	if (!toolDescription.trim()) throw new Error("Structured output tool description must not be empty");
 
-	if (rejectsUnsupportedBedrockStructuredOutput(model)) {
+	const nativeStructured = usesNativeStructuredOutput(model);
+	if (model.api === "bedrock-converse-stream" && !nativeStructured) {
 		throw new Error(
 			`Native Bedrock structured output is unsupported for ${model.id}. Use a Bedrock Claude 4.5/4.6 model or a provider with native schema-constrained output.`,
 		);
 	}
-
+	if (model.api === "anthropic-messages") assertAnthropicNativeSchemaCompatible(parameters as Record<string, unknown>);
 	const outputTool: Tool = {
 		name: toolName,
 		description: toolDescription,
 		parameters: parameters as TSchema,
-		// Preserve .6 structured-output behavior: this internal fallback tool
-		// opts into provider strictness. Provider capability, PI_STRICT_TOOLS=0,
-		// and the unstrictifiable-schema fallback remain authoritative gates.
-		//
-		// 0.82.1 merge: the fork's per-tool `strict: true` became upstream's
-		// `constrainedSampling`. "prefer" (not "require") is deliberate — this is
-		// a FALLBACK tool with a validate-and-retry backstop, so losing provider
-		// strictness must degrade, never throw. `"require"` throws outright when
-		// the provider lacks strict mode (see resolveJsonSchemaStrictSampling).
-		//
-		// KNOWN GAP: "prefer" degrades SILENTLY. Operator rule is loud-but-
-		// non-fatal for strict (fatal is reserved for batch, which has no
-		// backstop). Upstream offers no such mode; the fix is a diagnostic on the
-		// prefer-fallback path via AssistantMessage.diagnostics. See
-		// docs/dutchie-fork-reconciliation.md §4.
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 	};
 	const { toolName: _toolName, toolDescription: _toolDescription, ...providerOptions } = options;
-	const nativeStructured = usesNativeStructuredOutput(model);
-	if (model.api === "anthropic-messages") {
-		assertAnthropicNativeSchemaCompatible(parameters as Record<string, unknown>);
-	}
 	const message = await complete(
 		model,
 		nativeStructured ? context : { ...context, tools: [outputTool] },
@@ -478,7 +458,20 @@ export async function completeStructured<TParameters extends StructuredOutputSch
 			? { ...providerOptions, outputSchema: { name: toolName, schema: parameters } }
 			: { ...providerOptions, ...structuredToolChoice(model, toolName) },
 	);
-
+	if (
+		!nativeStructured &&
+		resolveJsonSchemaStrictSampling(
+			outputTool,
+			supportsStructuredToolStrictSampling(model),
+			model.api === "anthropic-messages" ? (key) => ANTHROPIC_UNSUPPORTED_SCHEMA_KEYWORDS.has(key) : undefined,
+		) !== true
+	) {
+		appendAssistantMessageDiagnostic(message, {
+			type: "structured_output_strict_sampling_fallback",
+			timestamp: Date.now(),
+			details: { api: model.api, provider: model.provider, model: model.id, tool: toolName },
+		});
+	}
 	if (message.stopReason === "error" || message.stopReason === "aborted") {
 		throw new Error(message.errorMessage ?? `Structured completion failed with stop reason: ${message.stopReason}`);
 	}
@@ -494,12 +487,15 @@ export async function completeStructured<TParameters extends StructuredOutputSch
 		} catch {
 			throw new Error("Native structured output was not valid JSON");
 		}
+		if (arguments_ === null || typeof arguments_ !== "object" || Array.isArray(arguments_)) {
+			throw new Error("Native structured output must be a JSON object");
+		}
 		return {
 			value: validateToolArguments(outputTool, {
 				type: "toolCall",
 				id: "native_structured_output",
 				name: toolName,
-				arguments: arguments_ as Record<string, unknown>,
+				arguments: arguments_ as JsonObject,
 			}) as StructuredOutputValue<TParameters>,
 			message,
 		};
@@ -511,7 +507,6 @@ export async function completeStructured<TParameters extends StructuredOutputSch
 	if (outputCalls.length !== 1) {
 		throw new Error(`Structured completion expected exactly one ${toolName} call, received ${outputCalls.length}`);
 	}
-
 	return {
 		value: validateToolArguments(outputTool, outputCalls[0]) as StructuredOutputValue<TParameters>,
 		message,

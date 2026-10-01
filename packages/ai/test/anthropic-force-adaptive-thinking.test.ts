@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { stream as rawStream } from "../src/api/anthropic-messages.ts";
 import { getModel, streamSimple } from "../src/compat.ts";
 import type { Context, Model, SimpleStreamOptions } from "../src/types.ts";
+import { normalizeContext } from "../src/utils/transcript.ts";
 
 interface AnthropicThinkingPayload {
 	thinking?: { type: string; budget_tokens?: number; display?: string };
@@ -121,7 +122,7 @@ describe("Anthropic forceAdaptiveThinking compat override", () => {
 		// Regression: the effort assignment used to REPLACE output_config,
 		// silently discarding the json_schema format.
 		let capturedPayload: AnthropicThinkingPayload | undefined;
-		const s = rawStream(makeCustomModel({ forceAdaptiveThinking: true }), makeContext(), {
+		const s = rawStream(makeCustomModel({ forceAdaptiveThinking: true }), normalizeContext(makeContext()), {
 			apiKey: "fake-key",
 			thinkingEnabled: true,
 			effort: "medium",
