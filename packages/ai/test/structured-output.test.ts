@@ -21,12 +21,16 @@ describe("completeStructured", () => {
 		registrations.push(registration);
 		registration.setResponses([
 			(context) => {
-				expect(context.tools).toEqual([
-					expect.objectContaining({
-						name: "submit_structured_output",
-						parameters: resultSchema,
-					}),
-				]);
+				const systemMessage = context.messages.find((message) => message.role === "system");
+				expect(systemMessage).toMatchObject({
+					role: "system",
+					toolsAdded: [
+						expect.objectContaining({
+							name: "submit_structured_output",
+							parameters: resultSchema,
+						}),
+					],
+				});
 				return fauxAssistantMessage([fauxToolCall("submit_structured_output", { answer: "ok", confidence: 0.9 })], {
 					stopReason: "toolUse",
 				});
@@ -41,6 +45,27 @@ describe("completeStructured", () => {
 
 		expect(result.value).toEqual({ answer: "ok", confidence: 0.9 });
 		expect(result.message.stopReason).toBe("toolUse");
+	});
+
+	it("diagnoses a non-fatal strict-sampling fallback for the validated tool path", async () => {
+		const registration = registerFauxProvider();
+		registrations.push(registration);
+		registration.setResponses([
+			fauxAssistantMessage([fauxToolCall("submit_structured_output", { answer: "ok", confidence: 0.9 })], {
+				stopReason: "toolUse",
+			}),
+		]);
+		const model = { ...registration.getModel(), compat: { supportsStrictMode: false } };
+		const result = await completeStructured(
+			model,
+			{ messages: [{ role: "user", content: "Return a result", timestamp: Date.now() }] },
+			resultSchema,
+		);
+
+		expect(result.value).toEqual({ answer: "ok", confidence: 0.9 });
+		expect(result.message.diagnostics).toContainEqual(
+			expect.objectContaining({ type: "structured_output_strict_sampling_fallback" }),
+		);
 	});
 
 	it("accepts plain JSON Schema for Zod-derived provider constraints", async () => {

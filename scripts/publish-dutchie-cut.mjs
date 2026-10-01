@@ -14,7 +14,6 @@ const packages = [
 		upstreamName: "@earendil-works/pi-session-backend-sqlite-node",
 		dutchieName: "@getdutchie/pi-session-backend-sqlite-node",
 	},
-	{ directory: "packages/server", upstreamName: "@earendil-works/pi-server", dutchieName: "@getdutchie/pi-server" },
 	{ directory: "packages/coding-agent", upstreamName: "@earendil-works/pi-coding-agent", dutchieName: "@getdutchie/pi-coding-agent" },
 ];
 
@@ -32,6 +31,9 @@ const externalUpstreamPackages = new Map([
 	["@earendil-works/pi-telemetry", "packages/telemetry"],
 	["@earendil-works/pi-client", "packages/client"],
 	["@earendil-works/pi-protocol", "packages/protocol"],
+	["@earendil-works/pi-server", "packages/server"],
+	["@earendil-works/pi-codemode", "packages/codemode"],
+	["@earendil-works/pi-mcp", "packages/mcp"],
 	["@earendil-works/chord", "packages/chord"],
 ]);
 
@@ -85,7 +87,7 @@ internal dependency declarations, and built import specifiers from
 @earendil-works/* to @getdutchie/*, then validates an isolated install.
 
 Options:
-  --version <version>      Required Dutchie prerelease version, e.g. 0.82.1-dutchie.2
+  --version <version>      Required Dutchie prerelease version, e.g. 0.99.2-dutchie.1
   --out <dir>              Output directory. Defaults to a new temp directory
   --force                  Remove --out first if it already exists
   --skip-build             Do not run npm run build:offline before staging
@@ -326,19 +328,21 @@ function validateNoUpstreamInternalSpecifiers(stageDirectory, pkg) {
  * rescope it instead of silently shipping upstream's code.
  */
 function verifyExternalUpstreamPackagesAreUnmodified(repoRoot) {
-	const revParse = spawnSync(commandForPlatform("git"), ["rev-parse", "--verify", "--quiet", "upstream/main"], {
+	const releaseVersion = readJson(join(repoRoot, "packages/ai/package.json")).version;
+	const upstreamReleaseRef = `v${releaseVersion}`;
+	const revParse = spawnSync(commandForPlatform("git"), ["rev-parse", "--verify", "--quiet", upstreamReleaseRef], {
 		cwd: repoRoot,
 		encoding: "utf8",
 	});
 	if (revParse.status !== 0) {
-		log("WARNING: no upstream/main ref, cannot verify that unrescoped workspace packages match upstream.");
-		log("         Run `git fetch upstream` to enable this check.");
+		log(`WARNING: no ${upstreamReleaseRef} tag, cannot verify that unrescoped workspace packages match upstream.`);
+		log("         Run `git fetch upstream --tags` to enable this check.");
 		return;
 	}
 
 	const modified = [];
 	for (const [name, directory] of externalUpstreamPackages) {
-		const diff = spawnSync(commandForPlatform("git"), ["diff", "--quiet", "upstream/main", "--", directory], {
+		const diff = spawnSync(commandForPlatform("git"), ["diff", "--quiet", upstreamReleaseRef, "--", directory], {
 			cwd: repoRoot,
 			encoding: "utf8",
 		});
@@ -346,12 +350,12 @@ function verifyExternalUpstreamPackagesAreUnmodified(repoRoot) {
 	}
 	if (modified.length > 0) {
 		throw new Error(
-			`These packages are treated as unmodified upstream dependencies but differ from upstream/main:\n${modified
+			`These packages are treated as unmodified upstream dependencies but differ from ${upstreamReleaseRef}:\n${modified
 				.map((entry) => `  - ${entry}`)
 				.join("\n")}\nRescope them in \`packages\` instead of resolving them from public npm.`,
 		);
 	}
-	log(`Verified ${externalUpstreamPackages.size} unrescoped workspace packages match upstream/main.`);
+	log(`Verified ${externalUpstreamPackages.size} unrescoped workspace packages match ${upstreamReleaseRef}.`);
 }
 
 function stagePackage(pkg, paths, version) {
@@ -444,7 +448,7 @@ function validateInstall(paths, tarballsByName) {
 	writeFileSync(join(isolatedDirectory, ".npmrc"), "@getdutchie:registry=https://npm.pkg.github.com\n");
 	run("npm", ["install", "--omit=dev", "--ignore-scripts"], { cwd: isolatedDirectory });
 
-	const isolatedLs = run("npm", ["ls", "@getdutchie/pi-server", "--all"], {
+	const isolatedLs = run("npm", ["ls", "@getdutchie/pi-ai", "@getdutchie/pi-agent-core", "@getdutchie/pi-tui", "--all"], {
 		capture: true,
 		cwd: isolatedDirectory,
 	}).stdout;
